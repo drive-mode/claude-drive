@@ -31,7 +31,7 @@ npm install -g claude-drive
 claude-drive start
 ```
 
-This launches the MCP server on `localhost:7891` and initializes the operator registry.
+This launches the MCP server on `localhost:7891` and prints the snippet to add to Claude Code.
 
 ### Add to Claude Code
 
@@ -41,8 +41,7 @@ Add the MCP server to `~/.claude/settings.json` so Claude Code picks it up autom
 {
   "mcpServers": {
     "claude-drive": {
-      "command": "claude-drive",
-      "args": ["start", "--mcp"]
+      "url": "http://localhost:7891/mcp"
     }
   }
 }
@@ -51,17 +50,20 @@ Add the MCP server to `~/.claude/settings.json` so Claude Code picks it up autom
 ### Run a session
 
 ```bash
-# Start Drive with a named operator in agent mode
-claude-drive start --operator implementer --mode agent
+# Spawn a named implementer operator
+claude-drive operator spawn Alpha --role implementer
 
-# In another terminal, check active state
-claude-drive status
+# Spawn a reviewer alongside it
+claude-drive operator spawn Beta --role reviewer --preset readonly
 
-# Register a reviewer alongside the implementer
-claude-drive operator add reviewer --permissions readonly
+# List active operators
+claude-drive operator list
+
+# Run a one-shot task
+claude-drive run "refactor auth module" --name Alpha --role implementer
 ```
 
-From inside a Claude Code session, operators call MCP tools like `drive_update_agent_screen`, `drive_speak`, and `drive_set_mode` to coordinate in real time.
+From inside a Claude Code session, operators call MCP tools like `agent_screen_activity`, `agent_screen_decision`, and `tts_speak` to coordinate in real time.
 
 ---
 
@@ -83,14 +85,14 @@ From inside a Claude Code session, operators call MCP tools like `drive_update_a
 ```mermaid
 flowchart TD
     A([Voice / Text Input]) --> B[cli.ts]
-    B --> C[Router\nintent classification]
-    C --> D[Drive Mode\nplan | agent | ask | debug]
-    D --> E[Operator Registry\nimplementer · reviewer · tester · researcher · planner]
-    E --> F[MCP Server\nlocalhost:7891\n14 tools]
-    F --> G[Terminal Agent Screen\nANSI output]
-    F --> H[TTS Engine\nedge-tts → piper → say]
-    F --> I[Store / State\n~/.claude-drive/]
-    J([Claude Code CLI]) -- MCP tool calls --> F
+    B --> C[Router]
+    C --> D[Drive Mode]
+    D --> E[Operator Registry]
+    E --> F[MCP Server on :7891]
+    F --> G[Terminal Agent Screen]
+    F --> H[TTS Engine]
+    F --> I[Store]
+    J([Claude Code CLI]) -- 14 MCP tools --> F
 ```
 
 ### Request pipeline
@@ -110,15 +112,17 @@ Voice/Text Input
 
 | Command | Description |
 |---|---|
-| `claude-drive start` | Start the MCP server and initialize the operator registry |
-| `claude-drive start --mcp` | Start in MCP stdio mode (used by Claude Code integration) |
-| `claude-drive status` | Show current Drive mode, active operator, and server health |
-| `claude-drive operator add <role>` | Register a new operator with an optional `--permissions` preset |
-| `claude-drive operator list` | List all registered operators and their states |
-| `claude-drive operator switch <name>` | Make a named operator active |
-| `claude-drive operator dismiss <name>` | Remove an operator from the registry |
-| `claude-drive mode <submode>` | Set Drive sub-mode (`plan`, `agent`, `ask`, `debug`, `off`) |
-| `claude-drive config` | Print the resolved configuration |
+| `claude-drive start` | Start the MCP server on `:7891` |
+| `claude-drive run <task>` | Run a one-shot task with an operator |
+| `claude-drive operator spawn [name]` | Spawn a new operator (`--role`, `--preset`) |
+| `claude-drive operator list` | List all active operators |
+| `claude-drive operator switch <name>` | Make a named operator the foreground operator |
+| `claude-drive operator dismiss <name>` | Dismiss an operator |
+| `claude-drive mode set <mode>` | Set drive sub-mode (`plan`, `agent`, `ask`, `debug`, `off`) |
+| `claude-drive mode status` | Show current drive state |
+| `claude-drive config set <key> <value>` | Persist a config value to `~/.claude-drive/config.json` |
+| `claude-drive config get <key>` | Read a config value |
+| `claude-drive tts <text>` | Speak text via TTS |
 
 ---
 
