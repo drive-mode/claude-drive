@@ -150,7 +150,7 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
   return server;
 }
 
-export async function startMcpServer(opts: McpServerOptions): Promise<void> {
+export async function startMcpServer(opts: McpServerOptions): Promise<http.Server> {
   const { port } = opts;
 
   const httpServer = http.createServer(async (req, res) => {
@@ -184,5 +184,7 @@ export async function startMcpServer(opts: McpServerOptions): Promise<void> {
     httpServer.on("error", reject);
   });
 
-  console.log(`[claude-drive] MCP server listening on http://127.0.0.1:${port}/mcp`);
+  const addr = httpServer.address() as { port: number };
+  console.log(`[claude-drive] MCP server listening on http://127.0.0.1:${addr.port}/mcp`);
+  return httpServer;
 }
