@@ -3,7 +3,7 @@
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
 import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
-import type { ResultMessage, SystemMessage, RateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultSuccess, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
@@ -144,22 +144,29 @@ export async function runOperator(
       },
     },
   })) {
-    const m = msg as unknown as (SystemMessage & { session_id?: string }) | RateLimitEvent | ResultMessage;
     const mAny = msg as { type?: string };
 
-    if (mAny.type === "system" && (m as SystemMessage).subtype === "init") {
-      const sid = (m as SystemMessage & { session_id?: string }).session_id;
-      if (sid) op.sessionId = sid;
+    if (mAny.type === "system") {
+      const sysMsg = msg as unknown as SDKSystemMessage;
+      if (sysMsg.subtype === "init") {
+        // Capture session_id if the SDK surfaces it on init (field may vary by SDK version)
+        const sid = (sysMsg as SDKSystemMessage & { session_id?: string }).session_id;
+        if (sid) op.sessionId = sid;
+      }
     } else if (mAny.type === "rate_limit_event") {
       logActivity(op.name, "Rate limited — pausing");
       speak("Rate limited. Pausing.");
-      const info = (m as RateLimitEvent).rate_limit_info as { status?: string; resets_at?: string } | undefined;
+      const rle = msg as unknown as SDKRateLimitEvent;
+      const info = rle.rate_limit_info;
       if (info) {
-        console.warn(`[OperatorManager] rate limit status: ${info.status}, resets_at: ${info.resets_at}`);
+        console.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
       }
-    } else if ((m as ResultMessage).result !== undefined) {
-      logActivity(op.name, (m as ResultMessage).result as string);
-      speak(`${op.name} done.`);
+    } else if (mAny.type === "result") {
+      const resultMsg = msg as unknown as SDKResultSuccess;
+      if (!resultMsg.is_error && resultMsg.result !== undefined) {
+        logActivity(op.name, resultMsg.result);
+        speak(`${op.name} done.`);
+      }
     }
   }
 }
