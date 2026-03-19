@@ -66,11 +66,20 @@ function ts(): string {
 
 // ── Output emitter ──────────────────────────────────────────────────────────
 
-class AgentOutputEmitter extends EventEmitter {
+export class AgentOutputEmitter extends EventEmitter {
   private sseBroadcast: ((data: string) => void) | null = null;
+  private renderMode: "terminal" | "tui" = "terminal";
 
   setSseBroadcast(fn: (data: string) => void): void {
     this.sseBroadcast = fn;
+  }
+
+  setRenderMode(mode: "terminal" | "tui"): void {
+    this.renderMode = mode;
+  }
+
+  getRenderMode(): "terminal" | "tui" {
+    return this.renderMode;
   }
 
   emit(eventName: string, event?: DriveOutputEvent): boolean {
@@ -82,6 +91,7 @@ class AgentOutputEmitter extends EventEmitter {
   }
 
   private renderToTerminal(event: DriveOutputEvent): void {
+    if (this.renderMode === "tui") return; // TUI owns stdout
     switch (event.type) {
       case "activity": {
         const color = colorFor(event.agent);
