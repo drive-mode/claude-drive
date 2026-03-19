@@ -30,6 +30,7 @@ const DEFAULTS: Record<string, unknown> = {
 
   // MCP server
   "mcp.port": 7891,
+  "mcp.portRange": 10,
   "mcp.appsEnabled": false,
 
   // Agent screen / output

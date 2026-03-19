@@ -111,7 +111,7 @@ export async function runOperator(
       allowedTools: toolsForPreset(op.permissionPreset),
       agents: subagentDefs,
       mcpServers: {
-        "claude-drive": { url: mcpUrl },
+        "claude-drive": { type: "http", url: mcpUrl },
       },
       systemPrompt: buildOperatorSystemPrompt(op),
       maxTurns,

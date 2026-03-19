@@ -72,7 +72,7 @@ function doSayFallback(speech: string, voice: string | undefined, speed: number)
   const say = getSay();
   if (!say) { inProgressUtterance = undefined; return; }
   say.stop();
-  say.speak(speech, voice ?? null, speed, (err: string) => {
+  say.speak(speech, voice ?? undefined, speed, (err: string) => {
     if (err) console.error("[Drive TTS]", err);
     inProgressUtterance = undefined;
     pushSpoken(speech);

@@ -11,6 +11,9 @@
  *   drive_set_mode
  */
 import http from "http";
+import fs from "fs";
+import path from "path";
+import os from "os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -19,8 +22,11 @@ import type { DriveModeManager } from "./driveMode.js";
 import { logActivity, logFile, logDecision, agentOutput } from "./agentOutput.js";
 import { speak, stop as ttsStop } from "./tts.js";
 
+const PORT_FILE = path.join(os.homedir(), ".claude-drive", "port");
+
 export interface McpServerOptions {
   port: number;
+  portRange?: number;
   registry: OperatorRegistry;
   driveMode: DriveModeManager;
 }
@@ -150,39 +156,106 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
   return server;
 }
 
-export async function startMcpServer(opts: McpServerOptions): Promise<void> {
+function writePortFile(port: number): void {
+  try {
+    fs.mkdirSync(path.dirname(PORT_FILE), { recursive: true });
+    fs.writeFileSync(PORT_FILE, String(port), "utf-8");
+  } catch (e) {
+    console.error("[claude-drive] Failed to write port file:", e);
+  }
+}
+
+function deletePortFile(): void {
+  try { fs.unlinkSync(PORT_FILE); } catch { /* already gone */ }
+}
+
+export function readPortFile(): number | null {
+  try {
+    const content = fs.readFileSync(PORT_FILE, "utf-8").trim();
+    const n = parseInt(content, 10);
+    return Number.isNaN(n) ? null : n;
+  } catch { return null; }
+}
+
+function tryListen(httpServer: http.Server, port: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.listen(port, "127.0.0.1", () => {
+      httpServer.removeListener("error", reject);
+      resolve();
+    });
+  });
+}
+
+export async function startMcpServer(opts: McpServerOptions): Promise<number> {
   const { port } = opts;
+  const portRange: number = opts.portRange ?? 10;
 
   const httpServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+    if (url.pathname !== "/mcp") {
+      res.writeHead(404); res.end();
+      return;
+    }
+
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (req.method === "POST") {
-      const id = sessionId ?? `session-${Date.now()}`;
-      let entry = sessions.get(id);
-      if (!entry) {
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
-        const server = buildMcpServer(opts);
-        await server.connect(transport);
-        entry = { transport, server };
-        sessions.set(id, entry);
+      // Existing session?
+      if (sessionId && sessions.has(sessionId)) {
+        await sessions.get(sessionId)!.transport.handleRequest(req, res);
+        return;
       }
-      await entry.transport.handleRequest(req, res);
+
+      // New session — create transport + server
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
+      const server = buildMcpServer(opts);
+      await server.connect(transport);
+
+      // After connect, handle the request (which includes initialize)
+      await transport.handleRequest(req, res);
+
+      // Now the transport has a session ID assigned
+      const newId = transport.sessionId;
+      if (newId) {
+        sessions.set(newId, { transport, server });
+        transport.onclose = () => { sessions.delete(newId); };
+      }
     } else if (req.method === "GET" && sessionId) {
       const entry = sessions.get(sessionId);
       if (!entry) { res.writeHead(404); res.end(); return; }
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "DELETE" && sessionId) {
-      sessions.delete(sessionId);
+      const entry = sessions.get(sessionId);
+      if (entry) {
+        await entry.transport.close();
+        sessions.delete(sessionId);
+      }
       res.writeHead(200); res.end();
     } else {
       res.writeHead(405); res.end();
     }
   });
 
-  await new Promise<void>((resolve, reject) => {
-    httpServer.listen(port, "127.0.0.1", () => resolve());
-    httpServer.on("error", reject);
-  });
+  let boundPort = port;
+  for (let attempt = 0; attempt < portRange; attempt++) {
+    try {
+      await tryListen(httpServer, port + attempt);
+      boundPort = port + attempt;
+      break;
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EADDRINUSE" && attempt < portRange - 1) {
+        console.log(`[claude-drive] Port ${port + attempt} in use, trying ${port + attempt + 1}...`);
+        continue;
+      }
+      throw err;
+    }
+  }
 
-  console.log(`[claude-drive] MCP server listening on http://127.0.0.1:${port}/mcp`);
+  writePortFile(boundPort);
+  process.on("exit", deletePortFile);
+
+  console.log(`[claude-drive] MCP server listening on http://127.0.0.1:${boundPort}/mcp`);
+  return boundPort;
 }

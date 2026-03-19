@@ -19,6 +19,7 @@ import { runOperator } from "./operatorManager.js";
 import { speak } from "./tts.js";
 import { printStatus, logActivity } from "./agentOutput.js";
 import { saveConfig, getConfig } from "./config.js";
+import { readPortFile } from "./mcpServer.js";
 
 const program = new Command();
 const registry = new OperatorRegistry();
@@ -35,7 +36,8 @@ program
   .command("start")
   .description("Start the claude-drive MCP server")
   .option("-p, --port <number>", "MCP server port", String(getConfig<number>("mcp.port") ?? 7891))
-  .action(async (opts: { port: string }) => {
+  .option("--tui", "Enable TUI mode (status display)")
+  .action(async (opts: { port: string; tui?: boolean }) => {
     const port = parseInt(opts.port, 10);
     console.log(`[claude-drive] Starting MCP server on port ${port}...`);
     driveMode.setActive(true);
@@ -43,15 +45,19 @@ program
 
     // Lazy-import MCP server to keep startup fast when not needed
     const { startMcpServer } = await import("./mcpServer.js");
-    await startMcpServer({ port, registry, driveMode });
+    const boundPort = await startMcpServer({ port, registry, driveMode });
     console.log(`[claude-drive] MCP server ready. Add to ~/.claude/settings.json:`);
     console.log(JSON.stringify({
       mcpServers: {
         "claude-drive": {
-          url: `http://localhost:${port}/mcp`,
+          url: `http://localhost:${boundPort}/mcp`,
         },
       },
     }, null, 2));
+
+    if (opts.tui) {
+      console.log("[claude-drive] TUI mode active. Press Ctrl+C to exit.");
+    }
 
     // Keep process alive
     process.stdin.resume();
@@ -60,6 +66,20 @@ program
       console.log("\n[claude-drive] Shutting down.");
       process.exit(0);
     });
+  });
+
+// ── port ──────────────────────────────────────────────────────────────────
+
+program
+  .command("port")
+  .description("Print the live MCP server URL (reads ~/.claude-drive/port)")
+  .action(() => {
+    const port = readPortFile();
+    if (port === null) {
+      console.error("[claude-drive] No running server found (port file missing).");
+      process.exit(1);
+    }
+    console.log(`http://localhost:${port}/mcp`);
   });
 
 // ── run ───────────────────────────────────────────────────────────────────
