@@ -81,6 +81,7 @@ export interface OperatorContext {
   baseCommit?: string;
   headCommit?: string;
   syncState?: SyncState;
+  sessionId?: string;
 }
 
 export interface SpawnOptions {

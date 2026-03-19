@@ -3,6 +3,7 @@
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
 import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
+import type { ResultMessage, SystemMessage, RateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
@@ -96,6 +97,7 @@ export async function runOperator(
   const mcpUrl = opts.mcpServerUrl ?? `http://localhost:${mcpPort}/mcp`;
   const cwd = opts.cwd ?? op.worktreePath ?? process.cwd();
   const maxTurns = opts.maxTurns ?? 50;
+  const maxBudgetUsd = getConfig<number>("operator.maxBudgetUsd");
 
   const subagentDefs = opts.allOperators
     ? buildSubagentDefs(opts.allOperators.filter((o) => o.id !== op.id))
@@ -115,6 +117,7 @@ export async function runOperator(
       },
       systemPrompt: buildOperatorSystemPrompt(op),
       maxTurns,
+      ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
       hooks: {
         PostToolUse: [
           {
@@ -141,8 +144,21 @@ export async function runOperator(
       },
     },
   })) {
-    if ("result" in msg) {
-      logActivity(op.name, msg.result as string);
+    const m = msg as unknown as (SystemMessage & { session_id?: string }) | RateLimitEvent | ResultMessage;
+    const mAny = msg as { type?: string };
+
+    if (mAny.type === "system" && (m as SystemMessage).subtype === "init") {
+      const sid = (m as SystemMessage & { session_id?: string }).session_id;
+      if (sid) op.sessionId = sid;
+    } else if (mAny.type === "rate_limit_event") {
+      logActivity(op.name, "Rate limited — pausing");
+      speak("Rate limited. Pausing.");
+      const info = (m as RateLimitEvent).rate_limit_info as { status?: string; resets_at?: string } | undefined;
+      if (info) {
+        console.warn(`[OperatorManager] rate limit status: ${info.status}, resets_at: ${info.resets_at}`);
+      }
+    } else if ((m as ResultMessage).result !== undefined) {
+      logActivity(op.name, (m as ResultMessage).result as string);
       speak(`${op.name} done.`);
     }
   }
