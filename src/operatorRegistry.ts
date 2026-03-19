@@ -5,7 +5,8 @@
  */
 import { EventEmitter } from "events";
 import { getConfig } from "./config.js";
-import type { SyncState } from "./syncTypes.js";
+
+type SyncState = "idle" | "syncing" | "conflict" | "applying" | "error";
 
 export type OperatorStatus = "active" | "background" | "completed" | "merged" | "paused";
 export type OperatorRole = "implementer" | "reviewer" | "tester" | "researcher" | "planner";
@@ -80,6 +81,7 @@ export interface OperatorContext {
   baseCommit?: string;
   headCommit?: string;
   syncState?: SyncState;
+  sessionId?: string;
 }
 
 export interface SpawnOptions {

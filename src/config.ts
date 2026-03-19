@@ -30,6 +30,7 @@ const DEFAULTS: Record<string, unknown> = {
 
   // MCP server
   "mcp.port": 7891,
+  "mcp.portRange": 5,
   "mcp.appsEnabled": false,
 
   // Agent screen / output
@@ -48,6 +49,15 @@ const DEFAULTS: Record<string, unknown> = {
 
   // Privacy
   "privacy.persistTranscripts": false,
+
+  // Approval gates
+  "approvalGates.enabled": true,
+  "approvalGates.blockPatterns": [],
+  "approvalGates.warnPatterns": [],
+  "approvalGates.logPatterns": [],
+
+  // Router
+  "router.llmEnabled": false,
 };
 
 let fileConfig: Record<string, unknown> = {};

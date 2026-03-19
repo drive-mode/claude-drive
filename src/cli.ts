@@ -17,7 +17,8 @@ import { createDriveModeManager } from "./driveMode.js";
 import { OperatorRegistry } from "./operatorRegistry.js";
 import { runOperator } from "./operatorManager.js";
 import { speak } from "./tts.js";
-import { printStatus, logActivity } from "./agentOutput.js";
+import { printStatus, logActivity, agentOutput } from "./agentOutput.js";
+import { route } from "./router.js";
 import { saveConfig, getConfig } from "./config.js";
 
 const program = new Command();
@@ -35,29 +36,42 @@ program
   .command("start")
   .description("Start the claude-drive MCP server")
   .option("-p, --port <number>", "MCP server port", String(getConfig<number>("mcp.port") ?? 7891))
-  .action(async (opts: { port: string }) => {
+  .option("--tui", "Render ink two-pane TUI instead of plain terminal output")
+  .action(async (opts: { port: string; tui?: boolean }) => {
     const port = parseInt(opts.port, 10);
-    console.log(`[claude-drive] Starting MCP server on port ${port}...`);
     driveMode.setActive(true);
-    printStatus(true, driveMode.subMode);
+
+    if (opts.tui) {
+      agentOutput.setRenderMode("tui");
+      const { startTui } = await import("./tui.js");
+      startTui({ registry, driveMode, agentOutput });
+    } else {
+      console.log(`[claude-drive] Starting MCP server on port ${port}...`);
+      printStatus(true, driveMode.subMode);
+    }
 
     // Lazy-import MCP server to keep startup fast when not needed
-    const { startMcpServer } = await import("./mcpServer.js");
-    await startMcpServer({ port, registry, driveMode });
-    console.log(`[claude-drive] MCP server ready. Add to ~/.claude/settings.json:`);
-    console.log(JSON.stringify({
-      mcpServers: {
-        "claude-drive": {
-          url: `http://localhost:${port}/mcp`,
+    const { startMcpServer, getPortFilePath } = await import("./mcpServer.js");
+    const { port: boundPort } = await startMcpServer({ port, registry, driveMode });
+
+    if (!opts.tui) {
+      console.log(`[claude-drive] MCP URL: http://localhost:${boundPort}/mcp`);
+      console.log(`[claude-drive] Port file: ${getPortFilePath()}`);
+      console.log(`[claude-drive] Add to ~/.claude/settings.json:`);
+      console.log(JSON.stringify({
+        mcpServers: {
+          "claude-drive": {
+            url: `http://localhost:${boundPort}/mcp`,
+          },
         },
-      },
-    }, null, 2));
+      }, null, 2));
+    }
 
     // Keep process alive
     process.stdin.resume();
     process.on("SIGINT", () => {
       driveMode.setActive(false);
-      console.log("\n[claude-drive] Shutting down.");
+      if (!opts.tui) console.log("\n[claude-drive] Shutting down.");
       process.exit(0);
     });
   });
@@ -71,11 +85,25 @@ program
   .option("--role <role>", "Operator role (implementer|reviewer|tester|researcher|planner)")
   .option("--preset <preset>", "Permission preset (readonly|standard|full)")
   .action(async (task: string, opts: { name?: string; role?: string; preset?: string }) => {
+    const decision = route({ prompt: task, driveSubMode: driveMode.subMode });
+    driveMode.setSubMode(decision.mode as never);
+    logActivity("router", decision.reason);
     const op = registry.spawn(opts.name, task, {
       role: opts.role as never,
       preset: opts.preset as never,
     });
     await runOperator(op, task, { allOperators: registry.getActive() });
+  });
+
+// ── serve-stdio ────────────────────────────────────────────────────────────
+
+program
+  .command("serve-stdio")
+  .description("Run MCP server over stdin/stdout (for Claude Desktop plugin)")
+  .action(async () => {
+    driveMode.setActive(true);
+    const { startMcpServerStdio } = await import("./mcpServer.js");
+    await startMcpServerStdio({ registry, driveMode });
   });
 
 // ── operator ──────────────────────────────────────────────────────────────
@@ -174,6 +202,26 @@ configCmd
   .description("Get a config value")
   .action((key: string) => {
     console.log(JSON.stringify(getConfig(key)));
+  });
+
+// ── port ──────────────────────────────────────────────────────────────────
+
+program
+  .command("port")
+  .description("Print the live MCP server URL (reads ~/.claude-drive/port)")
+  .option("--json", "Output as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const { readPortFile } = await import("./mcpServer.js");
+    const port = readPortFile();
+    if (port === undefined) {
+      console.error("[claude-drive] Server is not running (no port file found).");
+      process.exit(1);
+    }
+    if (opts.json) {
+      console.log(JSON.stringify({ url: `http://localhost:${port}/mcp`, port }));
+    } else {
+      console.log(`http://localhost:${port}/mcp`);
+    }
   });
 
 // ── main ──────────────────────────────────────────────────────────────────

@@ -41,15 +41,16 @@ export function getTtsConfig(): TtsConfig {
   };
 }
 
-/** Lazy-loaded say module. */
-let sayModule: typeof import("say") | null | undefined = undefined;
+/** Lazy-loaded say module (ESM dynamic import). */
+type SayInstance = { speak: (text: string, voice?: string | null, speed?: number, cb?: (err: string) => void) => void; stop: () => void };
+let sayModule: { default?: SayInstance } | null | undefined = undefined;
 
-function getSay(): typeof import("say") | null {
-  if (sayModule !== undefined) return sayModule as typeof import("say") | null;
+async function getSay(): Promise<SayInstance | null> {
+  if (sayModule !== undefined) return sayModule?.default ?? (sayModule as never);
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    sayModule = require("say");
-    return sayModule as typeof import("say");
+    const mod = await import("say");
+    sayModule = mod as { default?: SayInstance };
+    return (mod.default ?? mod) as SayInstance;
   } catch {
     sayModule = null;
     return null;
@@ -68,8 +69,8 @@ function pushSpoken(speech: string): void {
   if (spokenHistory.length > SPOKEN_HISTORY_SIZE) spokenHistory.shift();
 }
 
-function doSayFallback(speech: string, voice: string | undefined, speed: number): void {
-  const say = getSay();
+async function doSayFallback(speech: string, voice: string | undefined, speed: number): Promise<void> {
+  const say = await getSay();
   if (!say) { inProgressUtterance = undefined; return; }
   say.stop();
   say.speak(speech, voice ?? null, speed, (err: string) => {
@@ -91,7 +92,7 @@ export function speak(text: string, overrideVoice?: string): void {
       inProgressUtterance = undefined;
       pushSpoken(speech);
     }).then((started) => {
-      if (!started) doSayFallback(speech, overrideVoice ?? cfg.voice, cfg.speed);
+      if (!started) void doSayFallback(speech, overrideVoice ?? cfg.voice, cfg.speed);
     });
     return;
   }
@@ -100,7 +101,7 @@ export function speak(text: string, overrideVoice?: string): void {
     if (speakPiper(speech, cfg.volume, () => { inProgressUtterance = undefined; pushSpoken(speech); })) return;
   }
 
-  doSayFallback(speech, overrideVoice ?? cfg.voice, cfg.speed);
+  void doSayFallback(speech, overrideVoice ?? cfg.voice, cfg.speed);
 }
 
 export function speakFull(text: string, voice?: string, speed?: number): void {
@@ -115,7 +116,7 @@ export function speakFull(text: string, voice?: string, speed?: number): void {
       inProgressUtterance = undefined;
       pushSpoken(trimmed);
     }).then((started) => {
-      if (!started) doSayFallback(trimmed, voice ?? cfg.voice, speed ?? cfg.speed);
+      if (!started) void doSayFallback(trimmed, voice ?? cfg.voice, speed ?? cfg.speed);
     });
     return;
   }
@@ -124,7 +125,7 @@ export function speakFull(text: string, voice?: string, speed?: number): void {
     if (speakPiper(trimmed, cfg.volume, () => { inProgressUtterance = undefined; pushSpoken(trimmed); })) return;
   }
 
-  doSayFallback(trimmed, voice ?? cfg.voice, speed ?? cfg.speed);
+  void doSayFallback(trimmed, voice ?? cfg.voice, speed ?? cfg.speed);
 }
 
 export function stop(): void {
@@ -135,7 +136,7 @@ export function stop(): void {
     if (spokenHistory.length > SPOKEN_HISTORY_SIZE) spokenHistory.shift();
     inProgressUtterance = undefined;
   }
-  getSay()?.stop();
+  void getSay().then((say) => say?.stop());
 }
 
 export function isEnabled(): boolean { return getTtsConfig().enabled; }
