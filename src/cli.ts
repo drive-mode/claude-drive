@@ -12,6 +12,9 @@
  *   claude-drive tts "text"                # Speak text via TTS
  *   claude-drive config set <key> <value>  # Set a config value
  */
+import os from "os";
+import fs from "fs";
+import path from "path";
 import { Command } from "commander";
 import { createDriveModeManager } from "./driveMode.js";
 import { OperatorRegistry } from "./operatorRegistry.js";
@@ -221,6 +224,35 @@ program
       console.log(JSON.stringify({ url: `http://localhost:${port}/mcp`, port }));
     } else {
       console.log(`http://localhost:${port}/mcp`);
+    }
+  });
+
+// ── install ───────────────────────────────────────────────────────────────
+
+program
+  .command("install")
+  .description("Register claude-drive as an MCP server in Claude Desktop and ~/.claude/settings.json")
+  .action(async () => {
+    const { readPortFile } = await import("./mcpServer.js");
+    const port = readPortFile() ?? getConfig<number>("mcp.port") ?? 7891;
+    const entry = { url: `http://localhost:${port}/mcp` };
+    const targets: string[] = [
+      path.join(os.homedir(), ".claude", "settings.json"),
+    ];
+    if (process.env.APPDATA) {
+      targets.push(path.join(process.env.APPDATA, "Claude", "claude_desktop_config.json"));
+    }
+    for (const filePath of targets) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      } catch { /* file missing or unparseable — start fresh */ }
+      const mcpServers = (existing.mcpServers as Record<string, unknown>) ?? {};
+      mcpServers["claude-drive"] = entry;
+      existing.mcpServers = mcpServers;
+      fs.writeFileSync(filePath, JSON.stringify(existing, null, 2) + "\n");
+      console.log(`[claude-drive] Written: ${filePath}`);
     }
   });
 
