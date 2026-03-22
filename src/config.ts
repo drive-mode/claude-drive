@@ -25,7 +25,7 @@ const DEFAULTS: Record<string, unknown> = {
   // Operators
   "operators.maxConcurrent": 3,
   "operators.maxSubagents": 2,
-  "operators.namePool": ["Alpha", "Beta", "Gamma", "Delta", "Echo", "Foxtrot"],
+  "operators.namePool": [],  // empty = numbered "Operator 1", "Operator 2", …; set custom names to override
   "operators.defaultPermissionPreset": "standard",
 
   // MCP server
