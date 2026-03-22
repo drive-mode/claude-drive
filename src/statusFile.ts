@@ -6,6 +6,23 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
+export interface OperatorStatsData {
+  costUsd: number;
+  durationMs: number;
+  apiDurationMs: number;
+  turns: number;
+  taskCount: number;
+}
+
+export interface PlanCostData {
+  planIndex: number;
+  costUsd: number;
+  durationMs: number;
+  turns: number;
+  taskCount: number;
+  active: boolean;     // true if this plan period is still running
+}
+
 export interface StatusFileData {
   active: boolean;
   subMode: string;
@@ -15,7 +32,11 @@ export interface StatusFileData {
     status: string;
     role?: string;
     task: string;
+    stats: OperatorStatsData;
   }>;
+  totals: OperatorStatsData;
+  currentPlan: PlanCostData | null;
+  lastCompletedPlan: PlanCostData | null;
   updatedAt: number;
 }
 

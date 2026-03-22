@@ -21,6 +21,9 @@ import { printStatus, logActivity, agentOutput } from "./agentOutput.js";
 import { route } from "./router.js";
 import { saveConfig, getConfig } from "./config.js";
 import { writeStatusFile, deleteStatusFile } from "./statusFile.js";
+import { PlanCostTracker } from "./planCostTracker.js";
+
+const planCostTracker = new PlanCostTracker();
 
 const program = new Command();
 const registry = new OperatorRegistry();
@@ -53,7 +56,13 @@ program
 
     // Lazy-import MCP server to keep startup fast when not needed
     const { startMcpServer, getPortFilePath } = await import("./mcpServer.js");
-    const { port: boundPort } = await startMcpServer({ port, registry, driveMode });
+    const { port: boundPort } = await startMcpServer({
+      port, registry, driveMode,
+      onTaskComplete: (completedOp, stats) => {
+        registry.recordTaskStats(completedOp.name, stats.totalCostUsd, stats.durationMs, stats.apiDurationMs, stats.numTurns);
+        planCostTracker.recordCost(stats.totalCostUsd, stats.durationMs, stats.numTurns);
+      },
+    });
 
     if (!opts.tui) {
       console.log(`[claude-drive] MCP URL: http://localhost:${boundPort}/mcp`);
@@ -68,15 +77,53 @@ program
       }, null, 2));
     }
 
+    // Track plan cost boundaries on mode changes
+    driveMode.on("change", (state: { subMode: string }) => {
+      planCostTracker.onModeChange(state.subMode);
+    });
+
     // Flush status.json on every state change for the status line script
     function flushStatus(): void {
+      const totals = registry.getTotalStats();
+      const currentPlan = planCostTracker.getCurrentPlan();
+      const lastPlan = planCostTracker.getLastCompletedPlan();
       writeStatusFile({
         active: driveMode.active,
         subMode: driveMode.subMode,
         foregroundOperator: registry.getForeground()?.name ?? null,
         operators: registry.getActive().map((o) => ({
           name: o.name, status: o.status, role: o.role, task: o.task ?? "",
+          stats: {
+            costUsd: o.stats.totalCostUsd,
+            durationMs: o.stats.totalDurationMs,
+            apiDurationMs: o.stats.totalApiDurationMs,
+            turns: o.stats.totalTurns,
+            taskCount: o.stats.taskCount,
+          },
         })),
+        totals: {
+          costUsd: totals.totalCostUsd,
+          durationMs: totals.totalDurationMs,
+          apiDurationMs: totals.totalApiDurationMs,
+          turns: totals.totalTurns,
+          taskCount: totals.taskCount,
+        },
+        currentPlan: currentPlan ? {
+          planIndex: currentPlan.planIndex,
+          costUsd: currentPlan.costUsd,
+          durationMs: currentPlan.durationMs,
+          turns: currentPlan.turns,
+          taskCount: currentPlan.taskCount,
+          active: true,
+        } : null,
+        lastCompletedPlan: lastPlan ? {
+          planIndex: lastPlan.planIndex,
+          costUsd: lastPlan.costUsd,
+          durationMs: lastPlan.durationMs,
+          turns: lastPlan.turns,
+          taskCount: lastPlan.taskCount,
+          active: false,
+        } : null,
         updatedAt: Date.now(),
       });
     }
@@ -110,7 +157,13 @@ program
       role: opts.role as never,
       preset: opts.preset as never,
     });
-    await runOperator(op, task, { allOperators: registry.getActive() });
+    await runOperator(op, task, {
+      allOperators: registry.getActive(),
+      onTaskComplete: (completedOp, stats) => {
+        registry.recordTaskStats(completedOp.name, stats.totalCostUsd, stats.durationMs, stats.apiDurationMs, stats.numTurns);
+        planCostTracker.recordCost(stats.totalCostUsd, stats.durationMs, stats.numTurns);
+      },
+    });
   });
 
 // ── serve-stdio ────────────────────────────────────────────────────────────

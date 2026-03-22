@@ -16,6 +16,7 @@ import type { DriveModeManager } from "./driveMode.js";
 import { logActivity, logFile, logDecision, agentOutput } from "./agentOutput.js";
 import { speak, stop as ttsStop } from "./tts.js";
 import { runOperator } from "./operatorManager.js";
+import type { OnTaskComplete } from "./operatorManager.js";
 import { listPendingApprovals, respondToApproval } from "./approvalQueue.js";
 import type { WorktreeManager } from "./worktreeManager.js";
 import type { GitService } from "./gitService.js";
@@ -51,6 +52,7 @@ export interface McpServerOptions {
   worktreeManager?: WorktreeManager;
   gitService?: GitService;
   sessionId?: string;
+  onTaskComplete?: OnTaskComplete;
 }
 
 // Map of sessionId → { transport, server }
@@ -187,7 +189,7 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     if (!op) {
       op = registry.spawn(operatorName, task, { role, preset });
     }
-    void runOperator(op, task, { allOperators: registry.getActive() });
+    void runOperator(op, task, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete });
     return { content: [{ type: "text", text: `Task dispatched to ${op.name}: ${task}` }] };
   });
 
@@ -325,6 +327,38 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
       return `${s.id}  ${s.name ?? "(unnamed)"}  ${date}  ${opCount} operator(s)`;
     }).join("\n");
     return { content: [{ type: "text", text }] };
+  });
+
+  // ── Cost / stats tools ────────────────────────────────────────────────────
+
+  server.tool("drive_get_costs", "Get cost and stats for all operators and plans", {}, async () => {
+    const ops = registry.getActive();
+    const totals = registry.getTotalStats();
+    const all = registry.list();
+    const lines: string[] = [];
+    lines.push("=== Operator Costs ===");
+    for (const op of all) {
+      const s = op.stats;
+      if (s.taskCount === 0) {
+        lines.push(`  ${op.name} [${op.status}]: no tasks completed`);
+      } else {
+        lines.push(`  ${op.name} [${op.status}]: $${s.totalCostUsd.toFixed(4)} | ${s.totalTurns} turns | ${s.taskCount} task(s) | ${Math.round(s.totalDurationMs / 1000)}s`);
+      }
+    }
+    lines.push(`\n=== Totals ===`);
+    lines.push(`  Cost: $${totals.totalCostUsd.toFixed(4)} | Turns: ${totals.totalTurns} | Tasks: ${totals.taskCount}`);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("operator_record_cost", "Record task cost stats for an operator", {
+    nameOrId: z.string(),
+    costUsd: z.number(),
+    durationMs: z.number(),
+    apiDurationMs: z.number().optional(),
+    turns: z.number(),
+  }, async ({ nameOrId, costUsd, durationMs, apiDurationMs, turns }) => {
+    const ok = registry.recordTaskStats(nameOrId, costUsd, durationMs, apiDurationMs ?? 0, turns);
+    return { content: [{ type: "text", text: ok ? `Recorded: $${costUsd.toFixed(4)} for ${nameOrId}` : `Operator not found: ${nameOrId}` }] };
   });
 
   return server;

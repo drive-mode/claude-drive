@@ -31,16 +31,19 @@ const fs = require('fs');
 let cc = {};
 try { cc = JSON.parse(fs.readFileSync(0, 'utf8')); } catch {}
 
+function fmtCost(n) { return n >= 1 ? '$' + n.toFixed(2) : n >= 0.01 ? '$' + n.toFixed(3) : '$' + n.toFixed(4); }
+function fmtDur(ms) { const s = Math.floor(ms / 1000); const m = Math.floor(s / 60); return m > 0 ? m + 'm' + (s % 60) + 's' : s + 's'; }
+
 // Line 1: Claude Code session info
 const parts = [];
 ${showModel ? `if (cc.model) parts.push(typeof cc.model === 'object' ? (cc.model.display_name || cc.model.id || '') : String(cc.model));` : ""}
 ${showContext ? `if (cc.context_window && cc.context_window.used_percentage != null) parts.push('ctx:' + Math.round(cc.context_window.used_percentage) + '%');` : ""}
-${showCost ? `if (cc.cost && cc.cost.total_cost_usd != null) parts.push('$' + cc.cost.total_cost_usd.toFixed(2));` : ""}
-${showCost ? `if (cc.cost && cc.cost.total_duration_ms != null) { const s = Math.floor(cc.cost.total_duration_ms / 1000); const m = Math.floor(s / 60); parts.push(m > 0 ? m + 'm' + (s % 60) + 's' : s + 's'); }` : ""}
+${showCost ? `if (cc.cost && cc.cost.total_cost_usd != null) parts.push(fmtCost(cc.cost.total_cost_usd));` : ""}
+${showCost ? `if (cc.cost && cc.cost.total_duration_ms != null) parts.push(fmtDur(cc.cost.total_duration_ms));` : ""}
 if (parts.length > 0) console.log(parts.join('  '));
 
 ${showDriveState ? `
-// Line 2: claude-drive state
+// Drive state
 const STATUS_FILE = ${JSON.stringify(statusFilePath)};
 try {
   const raw = fs.readFileSync(STATUS_FILE, 'utf8');
@@ -49,13 +52,37 @@ try {
   if (stale) { console.log('Drive \\u25CB stale'); process.exit(0); }
   const icon = s.active ? '\\u25CF' : '\\u25CB';
   const mode = s.subMode || 'off';
-  const fg = s.foregroundOperator || '';
+  const t = s.totals || {};
+  const totalCost = t.costUsd || 0;
+
+  // Line 2: Drive header with total cost
+  let header = 'Drive ' + icon + ' ' + mode;
+  if (totalCost > 0) header += '  Total: ' + fmtCost(totalCost) + ' (' + (t.taskCount || 0) + ' tasks, ' + (t.turns || 0) + ' turns)';
+  console.log(header);
+
+  // Lines 3+: Per-operator stats
   const ops = s.operators || [];
-  const bgCount = ops.filter(o => o.status === 'background').length;
-  const bg = bgCount > 0 ? ' +' + bgCount : '';
-  ${showOperatorTask ? `const fgOp = ops.find(o => o.name === fg);
-  const task = fgOp && fgOp.task ? ' \\u2192 ' + fgOp.task.slice(0, ${maxTaskLength}) : '';` : `const task = '';`}
-  console.log('Drive ' + icon + ' ' + mode + (fg ? ' | ' + fg + bg : '') + task);
+  const fg = s.foregroundOperator || '';
+  for (const op of ops) {
+    const isFg = op.name === fg;
+    const marker = isFg ? '\\u25B6' : ' ';
+    const st = op.stats || {};
+    let line = marker + ' ' + op.name;
+    if (op.role) line += ' (' + op.role + ')';
+    line += ' [' + op.status + ']';
+    if (st.costUsd > 0) line += '  ' + fmtCost(st.costUsd) + '  ' + (st.turns || 0) + 'T  ' + fmtDur(st.durationMs || 0);
+    ${showOperatorTask ? `if (op.task) line += '  \\u2192 ' + op.task.slice(0, ${maxTaskLength});` : ""}
+    console.log(line);
+  }
+
+  // Plan cost line
+  const cp = s.currentPlan;
+  const lp = s.lastCompletedPlan;
+  if (cp && cp.costUsd > 0) {
+    console.log('Plan #' + cp.planIndex + ' (active): ' + fmtCost(cp.costUsd) + '  ' + cp.turns + 'T  ' + cp.taskCount + ' task(s)');
+  } else if (lp && lp.costUsd > 0) {
+    console.log('Plan #' + lp.planIndex + ' (done): ' + fmtCost(lp.costUsd) + '  ' + lp.turns + 'T  ' + lp.taskCount + ' task(s)');
+  }
 } catch {
   console.log('Drive \\u25CB offline');
 }

@@ -16,6 +16,7 @@ function makeOp(overrides: Partial<OperatorContext> = {}): OperatorContext {
     visibility: "shared",
     depth: 0,
     permissionPreset: "standard",
+    stats: { totalCostUsd: 0, totalDurationMs: 0, totalApiDurationMs: 0, totalTurns: 0, taskCount: 0 },
     ...overrides,
   };
 }

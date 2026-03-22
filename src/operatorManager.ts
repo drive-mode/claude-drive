@@ -71,11 +71,21 @@ export function buildSubagentDefs(
 
 // ── Run operator ────────────────────────────────────────────────────────────
 
+export interface TaskResultStats {
+  totalCostUsd: number;
+  durationMs: number;
+  apiDurationMs: number;
+  numTurns: number;
+}
+
+export type OnTaskComplete = (op: OperatorContext, stats: TaskResultStats) => void;
+
 export interface RunOperatorOptions {
   cwd?: string;
   mcpServerUrl?: string;
   maxTurns?: number;
   allOperators?: OperatorContext[];
+  onTaskComplete?: OnTaskComplete;
 }
 
 export async function runOperator(
@@ -157,8 +167,19 @@ export async function runOperator(
       if (info) {
         console.warn(`[OperatorManager] rate limit status: ${info.status}, resets_at: ${info.resets_at}`);
       }
-    } else if ("result" in m && typeof (m as Record<string, unknown>).result === "string") {
-      logActivity(op.name, (m as Record<string, unknown>).result as string);
+    } else if (mAny.type === "result") {
+      const result = m as Record<string, unknown>;
+      if (typeof result.result === "string") {
+        logActivity(op.name, result.result as string);
+      }
+      // Extract cost stats from result message (both success and error have these)
+      const stats: TaskResultStats = {
+        totalCostUsd: typeof result.total_cost_usd === "number" ? result.total_cost_usd : 0,
+        durationMs: typeof result.duration_ms === "number" ? result.duration_ms : 0,
+        apiDurationMs: typeof result.duration_api_ms === "number" ? result.duration_api_ms : 0,
+        numTurns: typeof result.num_turns === "number" ? result.num_turns : 0,
+      };
+      opts.onTaskComplete?.(op, stats);
       speak(`${op.name} done.`);
     }
   }

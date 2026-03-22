@@ -34,6 +34,25 @@ describe("generateStatusLineScript()", () => {
     expect(script).toContain("subMode");
   });
 
+  it("includes per-operator stats rendering", () => {
+    const script = generateStatusLineScript();
+    expect(script).toContain("op.stats");
+    expect(script).toContain("fmtCost");
+  });
+
+  it("includes total cost display", () => {
+    const script = generateStatusLineScript();
+    expect(script).toContain("totals");
+    expect(script).toContain("Total:");
+  });
+
+  it("includes plan cost display", () => {
+    const script = generateStatusLineScript();
+    expect(script).toContain("currentPlan");
+    expect(script).toContain("lastCompletedPlan");
+    expect(script).toContain("Plan #");
+  });
+
   it("includes staleness check", () => {
     const script = generateStatusLineScript();
     expect(script).toContain("60000");
