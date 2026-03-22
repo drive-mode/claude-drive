@@ -31,6 +31,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
     "@types/react": "^18.0.0",
     "jest": "^30.2.0",
@@ -40,13 +41,33 @@
   "jest": {
     "preset": "ts-jest/presets/default-esm",
     "testEnvironment": "node",
-    "testMatch": ["**/tests/**/*.test.ts"],
-    "extensionsToTreatAsEsm": [".ts", ".tsx"],
+    "testMatch": [
+      "**/tests/**/*.test.ts"
+    ],
+    "extensionsToTreatAsEsm": [
+      ".ts",
+      ".tsx"
+    ],
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "transform": {
-      "^.+\\.tsx?$": ["ts-jest", {"useESM": true}]
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "tsconfig": {
+            "module": "NodeNext",
+            "moduleResolution": "NodeNext",
+            "target": "ES2022",
+            "lib": ["ES2022"],
+            "strict": true,
+            "skipLibCheck": true,
+            "esModuleInterop": true,
+            "jsx": "react-jsx"
+          }
+        }
+      ]
     }
   }
 }

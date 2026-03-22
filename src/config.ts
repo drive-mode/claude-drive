@@ -56,6 +56,16 @@ const DEFAULTS: Record<string, unknown> = {
   "approvalGates.warnPatterns": [],
   "approvalGates.logPatterns": [],
 
+  // Status line
+  "statusLine.enabled": true,
+  "statusLine.padding": 2,
+  "statusLine.showModel": true,
+  "statusLine.showContext": true,
+  "statusLine.showCost": true,
+  "statusLine.showDriveState": true,
+  "statusLine.showOperatorTask": true,
+  "statusLine.maxTaskLength": 40,
+
   // Router
   "router.llmEnabled": false,
 };

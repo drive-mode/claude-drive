@@ -3,7 +3,7 @@
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
 import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
-import type { ResultMessage, SystemMessage, RateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultMessage as ResultMessage, SDKSystemMessage as SystemMessage, SDKRateLimitEvent as RateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
@@ -157,8 +157,8 @@ export async function runOperator(
       if (info) {
         console.warn(`[OperatorManager] rate limit status: ${info.status}, resets_at: ${info.resets_at}`);
       }
-    } else if ((m as ResultMessage).result !== undefined) {
-      logActivity(op.name, (m as ResultMessage).result as string);
+    } else if ("result" in m && typeof (m as Record<string, unknown>).result === "string") {
+      logActivity(op.name, (m as Record<string, unknown>).result as string);
       speak(`${op.name} done.`);
     }
   }

@@ -20,6 +20,7 @@ import { speak } from "./tts.js";
 import { printStatus, logActivity, agentOutput } from "./agentOutput.js";
 import { route } from "./router.js";
 import { saveConfig, getConfig } from "./config.js";
+import { writeStatusFile, deleteStatusFile } from "./statusFile.js";
 
 const program = new Command();
 const registry = new OperatorRegistry();
@@ -67,10 +68,27 @@ program
       }, null, 2));
     }
 
+    // Flush status.json on every state change for the status line script
+    function flushStatus(): void {
+      writeStatusFile({
+        active: driveMode.active,
+        subMode: driveMode.subMode,
+        foregroundOperator: registry.getForeground()?.name ?? null,
+        operators: registry.getActive().map((o) => ({
+          name: o.name, status: o.status, role: o.role, task: o.task ?? "",
+        })),
+        updatedAt: Date.now(),
+      });
+    }
+    registry.onDidChange(flushStatus);
+    driveMode.on("change", flushStatus);
+    flushStatus(); // initial write
+
     // Keep process alive
     process.stdin.resume();
     process.on("SIGINT", () => {
       driveMode.setActive(false);
+      deleteStatusFile();
       if (!opts.tui) console.log("\n[claude-drive] Shutting down.");
       process.exit(0);
     });
@@ -222,6 +240,42 @@ program
     } else {
       console.log(`http://localhost:${port}/mcp`);
     }
+  });
+
+// ── statusline ───────────────────────────────────────────────────────
+
+const statuslineCmd = program.command("statusline").description("Claude Code status line integration");
+
+statuslineCmd
+  .command("install")
+  .description("Install claude-drive status line into Claude Code settings")
+  .action(async () => {
+    const { installStatusLine } = await import("./statusLine.js");
+    const result = installStatusLine();
+    console.log(`[claude-drive] Status line script: ${result.scriptPath}`);
+    if (result.settingsPatched) {
+      console.log("[claude-drive] Updated ~/.claude/settings.json");
+    }
+    console.log("[claude-drive] Restart Claude Code to activate.");
+  });
+
+statuslineCmd
+  .command("uninstall")
+  .description("Remove claude-drive status line from Claude Code settings")
+  .action(async () => {
+    const { uninstallStatusLine } = await import("./statusLine.js");
+    const result = uninstallStatusLine();
+    if (result.scriptRemoved) console.log("[claude-drive] Removed status line script.");
+    if (result.settingsPatched) console.log("[claude-drive] Removed statusLine from ~/.claude/settings.json");
+    if (!result.scriptRemoved && !result.settingsPatched) console.log("[claude-drive] Nothing to uninstall.");
+  });
+
+statuslineCmd
+  .command("preview")
+  .description("Preview the generated status line script")
+  .action(async () => {
+    const { generateStatusLineScript } = await import("./statusLine.js");
+    console.log(generateStatusLineScript());
   });
 
 // ── main ──────────────────────────────────────────────────────────────────
