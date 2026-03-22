@@ -100,13 +100,12 @@ export interface SpawnOptions {
   role?: OperatorRole;
 }
 
-const FALLBACK_NAMES = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta"];
-
 function getNamePool(): string[] {
   const pool = getConfig<string[]>("operators.namePool");
-  return Array.isArray(pool) && pool.length > 0
-    ? pool.filter((n) => typeof n === "string" && n.trim().length > 0).map((n) => String(n).trim())
-    : FALLBACK_NAMES;
+  if (Array.isArray(pool) && pool.length > 0) {
+    return pool.filter((n) => typeof n === "string" && n.trim().length > 0).map((n) => String(n).trim());
+  }
+  return []; // empty = use numbered "Operator 1", "Operator 2", …
 }
 
 type RegistryListener = () => void;
@@ -171,10 +170,15 @@ export class OperatorRegistry {
   }
 
   private nextAvailableName(): string {
-    for (const name of getNamePool()) {
+    const pool = getNamePool();
+    // If user set custom names, use those first
+    for (const name of pool) {
       if (!this.nameToId.has(name.toLowerCase())) return name;
     }
-    return `Operator${this.operators.size + 1}`;
+    // Default: "Operator 1", "Operator 2", …
+    let n = 1;
+    while (this.nameToId.has(`operator ${n}`)) n++;
+    return `Operator ${n}`;
   }
 
   private nextAvailableNameFrom(base: string): string {

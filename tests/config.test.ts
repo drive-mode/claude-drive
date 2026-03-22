@@ -16,7 +16,8 @@ describe("getConfig()", () => {
   it("returns array default for operators.namePool", () => {
     const pool = getConfig<string[]>("operators.namePool");
     expect(Array.isArray(pool)).toBe(true);
-    expect(pool.length).toBeGreaterThan(0);
+    // Default is empty array (numbered "Operator 1", "Operator 2", … used instead)
+    expect(pool.length).toBe(0);
   });
 
   it("returns undefined for unknown key", () => {
