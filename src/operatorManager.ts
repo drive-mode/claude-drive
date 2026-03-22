@@ -3,7 +3,7 @@
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
 import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
-import type { SDKResultSuccess, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultSuccess, SDKResultError, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
@@ -71,11 +71,21 @@ export function buildSubagentDefs(
 
 // ── Run operator ────────────────────────────────────────────────────────────
 
+export interface TaskResultStats {
+  totalCostUsd: number;
+  durationMs: number;
+  apiDurationMs: number;
+  numTurns: number;
+}
+
+export type OnTaskComplete = (op: OperatorContext, stats: TaskResultStats) => void;
+
 export interface RunOperatorOptions {
   cwd?: string;
   mcpServerUrl?: string;
   maxTurns?: number;
   allOperators?: OperatorContext[];
+  onTaskComplete?: OnTaskComplete;
 }
 
 export async function runOperator(
@@ -161,11 +171,19 @@ export async function runOperator(
         console.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
       }
     } else if (mAny.type === "result") {
-      const resultMsg = msg as unknown as SDKResultSuccess;
-      if (!resultMsg.is_error && resultMsg.result !== undefined) {
-        logActivity(op.name, resultMsg.result);
-        speak(`${op.name} done.`);
+      const resultMsg = msg as unknown as (SDKResultSuccess | SDKResultError);
+      if (!resultMsg.is_error && "result" in resultMsg && resultMsg.result !== undefined) {
+        logActivity(op.name, (resultMsg as SDKResultSuccess).result);
       }
+      // Extract cost stats from result message (both success and error have these)
+      const stats: TaskResultStats = {
+        totalCostUsd: resultMsg.total_cost_usd ?? 0,
+        durationMs: resultMsg.duration_ms ?? 0,
+        apiDurationMs: resultMsg.duration_api_ms ?? 0,
+        numTurns: resultMsg.num_turns ?? 0,
+      };
+      opts.onTaskComplete?.(op, stats);
+      speak(`${op.name} done.`);
     }
   }
 }

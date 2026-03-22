@@ -48,7 +48,22 @@
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "transform": {
-      "^.+\\.tsx?$": ["ts-jest", {"useESM": true}]
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "tsconfig": {
+            "module": "NodeNext",
+            "moduleResolution": "NodeNext",
+            "target": "ES2022",
+            "lib": ["ES2022"],
+            "strict": true,
+            "skipLibCheck": true,
+            "esModuleInterop": true,
+            "jsx": "react-jsx"
+          }
+        }
+      ]
     }
   }
 }
