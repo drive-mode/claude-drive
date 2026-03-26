@@ -20,6 +20,17 @@ import type { OnTaskComplete } from "./operatorManager.js";
 import { listPendingApprovals, respondToApproval } from "./approvalQueue.js";
 import type { WorktreeManager } from "./worktreeManager.js";
 import type { GitService } from "./gitService.js";
+import { remember, recall, correct, forget, shareMemory } from "./memoryManager.js";
+import { memoryStore } from "./memoryStore.js";
+import type { MemoryKind } from "./memoryStore.js";
+import { hookRegistry } from "./hooks.js";
+import type { HookEvent, HookType } from "./hooks.js";
+import { skillRegistry, loadDefaultSkills } from "./skillLoader.js";
+import {
+  createCheckpoint, restoreCheckpoint, listCheckpoints, forkSession,
+} from "./checkpoint.js";
+import { trackEvent } from "./sessionManager.js";
+import { AutoDreamDaemon } from "./autoDream.js";
 
 export function getPortFilePath(): string {
   return path.join(os.homedir(), ".claude-drive", "port");
@@ -53,6 +64,7 @@ export interface McpServerOptions {
   gitService?: GitService;
   sessionId?: string;
   onTaskComplete?: OnTaskComplete;
+  dreamDaemon?: AutoDreamDaemon;
 }
 
 // Map of sessionId → { transport, server }
@@ -359,6 +371,237 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
   }, async ({ nameOrId, costUsd, durationMs, apiDurationMs, turns }) => {
     const ok = registry.recordTaskStats(nameOrId, costUsd, durationMs, apiDurationMs ?? 0, turns);
     return { content: [{ type: "text", text: ok ? `Recorded: $${costUsd.toFixed(4)} for ${nameOrId}` : `Operator not found: ${nameOrId}` }] };
+  });
+
+  // ── Memory tools ──────────────────────────────────────────────────────────
+
+  server.tool("memory_remember", "Store a typed memory entry for an operator", {
+    operatorName: z.string(),
+    kind: z.enum(["fact", "preference", "correction", "decision", "context"]),
+    content: z.string(),
+    tags: z.array(z.string()).optional(),
+  }, async ({ operatorName, kind, content, tags }) => {
+    const op = registry.findByNameOrId(operatorName);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${operatorName}` }], isError: true };
+    const entry = remember(op.id, kind as MemoryKind, content, tags);
+    return { content: [{ type: "text", text: `Remembered [${kind}]: ${entry.id}` }] };
+  });
+
+  server.tool("memory_recall", "Query memory entries", {
+    operatorName: z.string().optional(),
+    kinds: z.array(z.enum(["fact", "preference", "correction", "decision", "context"])).optional(),
+    tags: z.array(z.string()).optional(),
+    search: z.string().optional(),
+    limit: z.number().optional(),
+  }, async ({ operatorName, kinds, tags, search, limit }) => {
+    const op = operatorName ? registry.findByNameOrId(operatorName) : undefined;
+    const entries = recall(op?.id, {
+      kinds: kinds as MemoryKind[] | undefined,
+      tags,
+      search,
+      limit: limit ?? 20,
+    });
+    if (entries.length === 0) return { content: [{ type: "text", text: "No memories found." }] };
+    const text = entries.map((e) =>
+      `[${e.kind}] (${e.id.slice(0, 8)}) conf=${e.confidence.toFixed(2)} ${e.operatorId ? "" : "(shared)"} ${e.content}`
+    ).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("memory_correct", "Supersede a memory entry with corrected content", {
+    operatorName: z.string(),
+    oldId: z.string(),
+    newContent: z.string(),
+  }, async ({ operatorName, oldId, newContent }) => {
+    const op = registry.findByNameOrId(operatorName);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${operatorName}` }], isError: true };
+    const entry = correct(op.id, oldId, newContent);
+    if (!entry) return { content: [{ type: "text", text: `Memory entry not found: ${oldId}` }], isError: true };
+    return { content: [{ type: "text", text: `Corrected: ${entry.id} supersedes ${oldId}` }] };
+  });
+
+  server.tool("memory_forget", "Remove a memory entry", {
+    id: z.string(),
+  }, async ({ id }) => {
+    const ok = forget(id);
+    return { content: [{ type: "text", text: ok ? `Forgotten: ${id}` : `Not found: ${id}` }] };
+  });
+
+  server.tool("memory_share", "Promote an operator memory to shared/global", {
+    id: z.string(),
+  }, async ({ id }) => {
+    const ok = shareMemory(id);
+    return { content: [{ type: "text", text: ok ? `Shared: ${id}` : `Not found: ${id}` }] };
+  });
+
+  // ── Hook tools ───────────────────────────────────────────────────────────
+
+  server.tool("hooks_register", "Register a lifecycle hook", {
+    id: z.string(),
+    event: z.enum(["PreToolUse", "PostToolUse", "SessionStart", "SessionStop", "OperatorSpawn", "OperatorDismiss", "ModeChange", "PreApproval", "PostApproval", "MemoryWrite", "TaskStart", "TaskComplete"]),
+    type: z.enum(["command", "prompt"]),
+    matcher: z.string().optional(),
+    command: z.string().optional(),
+    prompt: z.string().optional(),
+    priority: z.number().optional(),
+  }, async ({ id, event, type, matcher, command, prompt, priority }) => {
+    hookRegistry.register({
+      id,
+      event: event as HookEvent,
+      type: type as HookType,
+      matcher,
+      command,
+      prompt,
+      priority,
+    });
+    return { content: [{ type: "text", text: `Hook registered: ${id} on ${event}` }] };
+  });
+
+  server.tool("hooks_unregister", "Remove a registered hook", {
+    id: z.string(),
+  }, async ({ id }) => {
+    const ok = hookRegistry.unregister(id);
+    return { content: [{ type: "text", text: ok ? `Unregistered: ${id}` : `Not found: ${id}` }] };
+  });
+
+  server.tool("hooks_list", "List registered hooks", {
+    event: z.string().optional(),
+  }, async ({ event }) => {
+    const hooks = hookRegistry.list(event as HookEvent | undefined);
+    if (hooks.length === 0) return { content: [{ type: "text", text: "No hooks registered." }] };
+    const text = hooks.map((h) =>
+      `${h.id} [${h.event}] ${h.type}${h.matcher ? ` matcher=${h.matcher}` : ""} priority=${h.priority ?? 100}`
+    ).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  // ── Skill tools ──────────────────────────────────────────────────────────
+
+  server.tool("skill_list", "List available skills", {}, async () => {
+    const skills = skillRegistry.list();
+    if (skills.length === 0) return { content: [{ type: "text", text: "No skills available. Add .md files to ~/.claude-drive/skills/" }] };
+    const text = skills.map((s) =>
+      `${s.name}: ${s.description}${s.tags ? ` [${s.tags.join(", ")}]` : ""}${s.parameters ? ` params: ${s.parameters.map((p) => p.name).join(", ")}` : ""}`
+    ).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("skill_load", "Load a skill and return its resolved prompt", {
+    name: z.string(),
+    params: z.record(z.string(), z.string()).optional(),
+  }, async ({ name, params }) => {
+    try {
+      const prompt = skillRegistry.resolve(name, params as Record<string, string> | undefined);
+      if (!prompt) return { content: [{ type: "text", text: `Skill not found: ${name}` }], isError: true };
+      return { content: [{ type: "text", text: prompt }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
+    }
+  });
+
+  server.tool("skill_run", "Load a skill and dispatch to an operator", {
+    name: z.string(),
+    operatorName: z.string().optional(),
+    params: z.record(z.string(), z.string()).optional(),
+  }, async ({ name, operatorName, params }) => {
+    try {
+      const prompt = skillRegistry.resolve(name, params as Record<string, string> | undefined);
+      if (!prompt) return { content: [{ type: "text", text: `Skill not found: ${name}` }], isError: true };
+      const skill = skillRegistry.get(name)!;
+      let op = operatorName ? registry.findByNameOrId(operatorName) : registry.getForeground();
+      if (!op) {
+        op = registry.spawn(operatorName ?? name, prompt, {
+          role: skill.requiredRole,
+          preset: skill.requiredPreset,
+        });
+      }
+      void runOperator(op, prompt, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete });
+      return { content: [{ type: "text", text: `Skill "${name}" dispatched to ${op.name}` }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
+    }
+  });
+
+  // ── Enhanced Session / Checkpoint tools ──────────────────────────────────
+
+  server.tool("session_checkpoint", "Create a checkpoint of current state", {
+    name: z.string().optional(),
+    description: z.string().optional(),
+  }, async ({ name, description }) => {
+    const sessionId = opts.sessionId ?? `session-${Date.now()}`;
+    const { trackEvent: _te, ...sessionMod } = await import("./sessionManager.js");
+    const cp = createCheckpoint(sessionId, registry, driveMode, [], name, description);
+    return { content: [{ type: "text", text: `Checkpoint created: ${cp.id}${name ? ` (${name})` : ""}` }] };
+  });
+
+  server.tool("session_restore_checkpoint", "Restore state from a checkpoint", {
+    checkpointId: z.string(),
+  }, async ({ checkpointId }) => {
+    const result = restoreCheckpoint(checkpointId, registry, driveMode);
+    return { content: [{ type: "text", text: result.ok ? `Restored checkpoint: ${checkpointId}` : `Checkpoint not found: ${checkpointId}` }] };
+  });
+
+  server.tool("session_list_checkpoints", "List all checkpoints", {
+    sessionId: z.string().optional(),
+  }, async ({ sessionId }) => {
+    const checkpoints = listCheckpoints(sessionId);
+    if (checkpoints.length === 0) return { content: [{ type: "text", text: "No checkpoints found." }] };
+    const text = checkpoints.map((cp) => {
+      const date = new Date(cp.createdAt).toLocaleString();
+      const opCount = cp.operators.filter((o) => o.status !== "completed").length;
+      return `${cp.id}  ${cp.name ?? "(unnamed)"}  ${date}  ${opCount} ops  ${cp.memory.length} memories`;
+    }).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("session_fork", "Fork current session (optionally from a checkpoint)", {
+    checkpointId: z.string().optional(),
+    newName: z.string().optional(),
+  }, async ({ checkpointId, newName }) => {
+    const sessionId = opts.sessionId ?? `session-${Date.now()}`;
+    try {
+      const result = forkSession(sessionId, registry, driveMode, [], checkpointId, newName);
+      return { content: [{ type: "text", text: `Forked session: ${result.newSessionId}` }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Fork failed: ${e}` }], isError: true };
+    }
+  });
+
+  server.tool("session_metadata", "Set metadata on the current session", {
+    key: z.string(),
+    value: z.string(),
+  }, async ({ key, value }) => {
+    // Store in the drive state for now
+    const { store } = await import("./store.js");
+    store.update(`session.metadata.${key}`, value);
+    return { content: [{ type: "text", text: `Metadata set: ${key} = ${value}` }] };
+  });
+
+  // ── Dream tools ──────────────────────────────────────────────────────────
+
+  server.tool("dream_trigger", "Manually trigger a dream consolidation cycle", {}, async () => {
+    if (opts.dreamDaemon) {
+      const result = opts.dreamDaemon.runOnce();
+      return { content: [{ type: "text", text: result.summary }] };
+    }
+    const { runDreamCycle } = await import("./autoDream.js");
+    const result = runDreamCycle();
+    return { content: [{ type: "text", text: result.summary }] };
+  });
+
+  server.tool("dream_status", "Get auto-dream status and last result", {}, async () => {
+    const daemon = opts.dreamDaemon;
+    const last = daemon?.getLastResult();
+    const lines: string[] = [
+      `Auto-dream: ${daemon?.isRunning() ? "running" : "stopped"}`,
+    ];
+    if (last) {
+      lines.push(`Last run: ${new Date(last.timestamp).toLocaleString()}`);
+      lines.push(`  ${last.summary}`);
+    }
+    const stats = memoryStore.stats();
+    lines.push(`Memory: ${stats.total} entries`);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   });
 
   return server;
