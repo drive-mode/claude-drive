@@ -5,6 +5,7 @@
  */
 import { EventEmitter } from "events";
 import { getConfig } from "./config.js";
+import { hookRegistry } from "./hooks.js";
 
 type SyncState = "idle" | "syncing" | "conflict" | "applying" | "error";
 
@@ -166,6 +167,10 @@ export class OperatorRegistry {
       op.status = "background";
     }
     this.emitChange();
+    // Fire OperatorSpawn hook (non-blocking)
+    void hookRegistry.execute("OperatorSpawn", {
+      event: "OperatorSpawn", operatorId: id, operatorName: resolvedName, timestamp: Date.now(),
+    });
     return op;
   }
 
@@ -233,6 +238,10 @@ export class OperatorRegistry {
     if (!op) return false;
     op.status = "completed";
     this.events.emit("operatorCompleted", op.id, op.task || "completed");
+    // Fire OperatorDismiss hook (non-blocking)
+    void hookRegistry.execute("OperatorDismiss", {
+      event: "OperatorDismiss", operatorId: op.id, operatorName: op.name, timestamp: Date.now(),
+    });
     if (this.foregroundId === op.id) this.foregroundId = this.pickNextForeground(op.id);
     for (const child of this.operators.values()) {
       if (child.parentId === op.id && child.status !== "completed" && child.status !== "merged") {

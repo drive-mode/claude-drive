@@ -22,6 +22,10 @@ import { route } from "./router.js";
 import { saveConfig, getConfig } from "./config.js";
 import { writeStatusFile, deleteStatusFile } from "./statusFile.js";
 import { PlanCostTracker } from "./planCostTracker.js";
+import { hookRegistry } from "./hooks.js";
+import { skillRegistry, loadDefaultSkills } from "./skillLoader.js";
+import { AutoDreamDaemon } from "./autoDream.js";
+import { memoryStore } from "./memoryStore.js";
 
 const planCostTracker = new PlanCostTracker();
 
@@ -54,10 +58,25 @@ program
       printStatus(true, driveMode.subMode);
     }
 
+    // Initialize hooks, skills, and auto-dream
+    import("os").then(({ default: os }) => {
+      import("path").then(({ default: pathMod }) => {
+        const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
+        hookRegistry.loadFromDirectory(hooksDir);
+        hookRegistry.loadFromConfig();
+      });
+    });
+    loadDefaultSkills();
+    const dreamDaemon = new AutoDreamDaemon();
+    dreamDaemon.start();
+
+    // Fire SessionStart hook
+    void hookRegistry.execute("SessionStart", { event: "SessionStart", timestamp: Date.now() });
+
     // Lazy-import MCP server to keep startup fast when not needed
     const { startMcpServer, getPortFilePath } = await import("./mcpServer.js");
     const { port: boundPort } = await startMcpServer({
-      port, registry, driveMode,
+      port, registry, driveMode, dreamDaemon,
       onTaskComplete: (completedOp, stats) => {
         registry.recordTaskStats(completedOp.name, stats.totalCostUsd, stats.durationMs, stats.apiDurationMs, stats.numTurns);
         planCostTracker.recordCost(stats.totalCostUsd, stats.durationMs, stats.numTurns);
@@ -134,6 +153,8 @@ program
     // Keep process alive
     process.stdin.resume();
     process.on("SIGINT", () => {
+      dreamDaemon.stop();
+      void hookRegistry.execute("SessionStop", { event: "SessionStop", timestamp: Date.now() });
       driveMode.setActive(false);
       deleteStatusFile();
       if (!opts.tui) console.log("\n[claude-drive] Shutting down.");
@@ -329,6 +350,124 @@ statuslineCmd
   .action(async () => {
     const { generateStatusLineScript } = await import("./statusLine.js");
     console.log(generateStatusLineScript());
+  });
+
+// ── skill ─────────────────────────────────────────────────────────────────
+
+const skillCmd = program.command("skill").description("Manage skills");
+
+skillCmd
+  .command("list")
+  .description("List available skills")
+  .action(() => {
+    loadDefaultSkills();
+    const skills = skillRegistry.list();
+    if (skills.length === 0) { console.log("No skills available. Add .md files to ~/.claude-drive/skills/"); return; }
+    for (const s of skills) {
+      console.log(`  ${s.name}: ${s.description}${s.tags ? ` [${s.tags.join(", ")}]` : ""}`);
+    }
+  });
+
+skillCmd
+  .command("show <name>")
+  .description("Show a skill's resolved prompt")
+  .action((name: string) => {
+    loadDefaultSkills();
+    const skill = skillRegistry.get(name);
+    if (!skill) { console.error(`[claude-drive] Skill not found: ${name}`); return; }
+    console.log(`--- ${skill.name} ---`);
+    console.log(skill.prompt);
+  });
+
+// ── dream ─────────────────────────────────────────────────────────────────
+
+program
+  .command("dream")
+  .description("Manually trigger a dream memory consolidation cycle")
+  .action(async () => {
+    const { runDreamCycle } = await import("./autoDream.js");
+    const result = runDreamCycle();
+    console.log(`[claude-drive] ${result.summary}`);
+    const stats = memoryStore.stats();
+    console.log(`[claude-drive] Memory: ${stats.total} entries`);
+  });
+
+// ── session (enhanced) ────────────────────────────────────────────────────
+
+const sessionCmd = program.command("session").description("Session management");
+
+sessionCmd
+  .command("list")
+  .description("List saved sessions")
+  .action(async () => {
+    const { listSessions } = await import("./sessionManager.js");
+    const sessions = listSessions();
+    if (sessions.length === 0) { console.log("No saved sessions."); return; }
+    for (const s of sessions) {
+      const date = new Date(s.createdAt).toLocaleString();
+      const opCount = s.operators.filter((o: { status: string }) => o.status !== "completed").length;
+      console.log(`  ${s.id}  ${s.name ?? "(unnamed)"}  ${date}  ${opCount} operator(s)`);
+    }
+  });
+
+sessionCmd
+  .command("checkpoint [name]")
+  .description("Create a checkpoint of current state")
+  .action(async (name?: string) => {
+    const { createCheckpoint } = await import("./checkpoint.js");
+    const sessionId = `session-${Date.now()}`;
+    const cp = createCheckpoint(sessionId, registry, driveMode, [], name);
+    console.log(`[claude-drive] Checkpoint created: ${cp.id}`);
+  });
+
+sessionCmd
+  .command("restore <checkpointId>")
+  .description("Restore state from a checkpoint")
+  .action(async (checkpointId: string) => {
+    const { restoreCheckpoint } = await import("./checkpoint.js");
+    const result = restoreCheckpoint(checkpointId, registry, driveMode);
+    console.log(result.ok ? `[claude-drive] Restored: ${checkpointId}` : `[claude-drive] Not found: ${checkpointId}`);
+  });
+
+sessionCmd
+  .command("fork [name]")
+  .description("Fork current session")
+  .option("--from <checkpointId>", "Fork from a specific checkpoint")
+  .action(async (name: string | undefined, opts: { from?: string }) => {
+    const { forkSession } = await import("./checkpoint.js");
+    const sessionId = `session-${Date.now()}`;
+    try {
+      const result = forkSession(sessionId, registry, driveMode, [], opts.from, name);
+      console.log(`[claude-drive] Forked: ${result.newSessionId}`);
+    } catch (e) {
+      console.error(`[claude-drive] Fork failed: ${e}`);
+    }
+  });
+
+// ── memory ────────────────────────────────────────────────────────────────
+
+const memoryCmd = program.command("memory").description("Memory management");
+
+memoryCmd
+  .command("stats")
+  .description("Show memory statistics")
+  .action(() => {
+    const stats = memoryStore.stats();
+    console.log(`[claude-drive] Memory: ${stats.total} entries`);
+    console.log(`  By kind: ${JSON.stringify(stats.byKind)}`);
+    console.log(`  By operator: ${JSON.stringify(stats.byOperator)}`);
+  });
+
+memoryCmd
+  .command("list")
+  .description("List recent memory entries")
+  .option("--limit <n>", "Max entries", "20")
+  .action((opts: { limit: string }) => {
+    const { recall } = require("./memoryManager.js") as typeof import("./memoryManager.js");
+    const entries = recall(undefined, { limit: parseInt(opts.limit, 10) });
+    for (const e of entries) {
+      console.log(`  [${e.kind}] (${e.id.slice(0, 8)}) conf=${e.confidence.toFixed(2)} ${e.content.slice(0, 80)}`);
+    }
   });
 
 // ── main ──────────────────────────────────────────────────────────────────
