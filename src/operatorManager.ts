@@ -7,6 +7,8 @@ import type { SDKResultSuccess, SDKResultError, SDKSystemMessage, SDKRateLimitEv
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
+import { buildMemoryContext } from "./memoryManager.js";
+import { hookRegistry } from "./hooks.js";
 
 // ── Tool permission mapping ─────────────────────────────────────────────────
 
@@ -34,7 +36,12 @@ export function buildOperatorSystemPrompt(op: OperatorContext): string {
   if (op.systemHint) {
     lines.push(op.systemHint);
   }
-  if (op.memory.length > 0) {
+  // Structured memory (typed entries from memoryStore)
+  const memCtx = buildMemoryContext(op.id);
+  if (memCtx) {
+    lines.push(memCtx);
+  } else if (op.memory.length > 0) {
+    // Fallback to legacy string[] memory for backward compat
     lines.push("\nContext from memory:");
     lines.push(...op.memory.slice(-10).map((m) => `  - ${m}`));
   }
@@ -113,6 +120,14 @@ export async function runOperator(
     ? buildSubagentDefs(opts.allOperators.filter((o) => o.id !== op.id))
     : {};
 
+  // Fire TaskStart hook
+  const hookCtx = { event: "TaskStart" as const, operatorId: op.id, operatorName: op.name, timestamp: Date.now() };
+  const hookResult = await hookRegistry.execute("TaskStart", hookCtx);
+  if (hookResult.abort) {
+    logActivity(op.name, `Task aborted by hook: ${task}`);
+    return;
+  }
+
   speak(`${op.name} starting: ${task}`);
   logActivity(op.name, `Starting task: ${task}`);
 
@@ -183,6 +198,10 @@ export async function runOperator(
         numTurns: resultMsg.num_turns ?? 0,
       };
       opts.onTaskComplete?.(op, stats);
+      // Fire TaskComplete hook
+      void hookRegistry.execute("TaskComplete", {
+        event: "TaskComplete", operatorId: op.id, operatorName: op.name, timestamp: Date.now(),
+      });
       speak(`${op.name} done.`);
     }
   }

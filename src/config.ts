@@ -68,6 +68,35 @@ const DEFAULTS: Record<string, unknown> = {
 
   // Router
   "router.llmEnabled": false,
+
+  // Memory
+  "memory.maxEntries": 500,
+  "memory.maxPerOperator": 100,
+  "memory.defaultConfidence": 0.8,
+  "memory.decayEnabled": true,
+  "memory.decayHalfLifeHours": 168,  // 1 week
+
+  // Hooks
+  "hooks.enabled": true,
+  "hooks.directory": "~/.claude-drive/hooks",
+  "hooks.definitions": [],
+
+  // Skills
+  "skills.directory": "~/.claude-drive/skills",
+  "skills.enabled": true,
+
+  // Sessions (enhanced)
+  "sessions.maxCheckpoints": 20,
+  "sessions.autoCheckpoint": false,
+  "sessions.autoCheckpointIntervalMs": 300000,  // 5 minutes
+
+  // Auto-Dream
+  "dream.enabled": true,
+  "dream.intervalMs": 900000,        // 15 minutes
+  "dream.minEntries": 10,
+  "dream.pruneThreshold": 0.2,
+  "dream.mergeThreshold": 0.7,
+  "dream.maxAgeMs": 604800000,       // 7 days
 };
 
 let fileConfig: Record<string, unknown> = {};
