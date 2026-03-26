@@ -520,7 +520,7 @@ description: "Research API optimization"
 >
 > **Analyze and answer:**
 >
-> 1. **PROMPT CACHING** — Are operator system prompts marked with `cache_control`? Operator prompts are likely repeated across turns — caching could reduce input costs by 90%. What's the estimated savings for a typical 5-operator session? Is the SDK handling caching automatically or does claude-drive need to opt in?
+> 1. **PROMPT CACHING** — Are operator system prompts marked with `cache_control`? Operator prompts are likely repeated across turns — caching could reduce input costs by 90%. What's the estimated savings for a typical 5-operator session? **Critical question:** Does the Agent SDK `query()` expose prompt caching controls, or does claude-drive need to use the Messages API directly for long-lived operators? If `buildOperatorSystemPrompt()` rebuilds every call without cache_control, the static prefix (role + tool instructions) is wasted tokens every turn.
 >
 > 2. **MODEL ROUTING** — Does claude-drive use the same model for all operators? Could it route by role:
 >    - Researcher/reviewer → Haiku ($1→$5/MTok) for read-only analysis
@@ -537,7 +537,7 @@ description: "Research API optimization"
 >
 > 6. **STRUCTURED OUTPUTS** — Are operator responses validated against schemas? Could `operatorManager.ts` use structured outputs to guarantee response format? What schemas would each operator role produce?
 >
-> 7. **RATE LIMIT MANAGEMENT** — Does claude-drive read `anthropic-ratelimit-*-remaining` headers? With 5+ concurrent operators, rate limits become a real concern. Is there backpressure? Could the cost tracker also track rate limit headroom? Note: cached tokens don't count toward ITPM limits.
+> 7. **RATE LIMIT MANAGEMENT** — Does claude-drive read `anthropic-ratelimit-*-remaining` headers? With 5+ concurrent operators, rate limits become a real concern. Is there backpressure? Could the cost tracker also track rate limit headroom? Note: cached tokens don't count toward ITPM limits. **Multi-operator concurrency:** N operators hitting the API simultaneously spike ITPM. Does claude-drive need a shared rate-limit-aware dispatcher that pauses low-priority operators when approaching limits?
 >
 > 8. **STREAMING** — Is `includePartialMessages` enabled for real-time operator output? If not, users see nothing until the full response completes — poor UX for long-running tasks.
 >
