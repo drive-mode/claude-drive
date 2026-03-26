@@ -21,7 +21,7 @@
 
 ## How to Run This Sprint
 
-Paste this entire document as your prompt in a fresh Claude Code session pointed at the claude-drive repository. Claude will execute all phases using TodoWrite, Agent (foreground/background), and file writes to produce 8 research documents in `docs/research/`.
+Paste this entire document as your prompt in a fresh Claude Code session pointed at the claude-drive repository. Claude will execute all phases using TodoWrite, Agent (foreground/background), and file writes to produce 10 research documents in `docs/research/`.
 
 ---
 
@@ -53,21 +53,45 @@ Every file and function in the codebase must be evaluated against these criteria
 
 ## Claude Agent SDK Context
 
-claude-drive uses `@anthropic-ai/claude-agent-sdk` to run operators as subagents. Research agents must understand:
-- How `query()` is called — parameters, hooks, streaming
-- How subagent definitions are built and composed
-- How tool permissions map to SDK's `allowedTools`
-- How cost/usage data is extracted from SDK responses
-- Whether the SDK integration follows best practices or has anti-patterns
-- Whether claude-drive could itself be restructured as composable Agent SDK agents
+claude-drive uses `@anthropic-ai/claude-agent-sdk` to run operators as subagents. Research agents must understand **all** SDK capabilities and evaluate whether claude-drive is leveraging them:
 
-<!-- TODO: Add SDK version pinning research — `latest` in package.json is a ticking bomb.
-     The Build Doctor agent should check if the installed SDK version matches what the
-     code was written against, and whether breaking changes exist in newer releases. -->
+### Core SDK Features to Audit
+- **`query()` parameters** — prompt, options, streaming (`includePartialMessages`), session management (`continue`, `resume`, `forkSession`)
+- **Subagent definitions** — `AgentDefinition` with `description`, `prompt`, `tools`, `model`. Can operators be defined this way?
+- **Custom tools** — `@tool` decorator / `tool()` helper with in-process MCP server (`createSdkMcpServer()`). Tool annotations: `readOnlyHint`, `destructiveHint`, `idempotentHint`
+- **Tool permissions** — `allowedTools`, `disallowedTools`, `tools` array, `canUseTool` callback, permission modes (`default`/`dontAsk`/`acceptEdits`/`bypassPermissions`/`plan`)
+- **Hooks** — `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop`, `Stop`, `PreCompact`, `PermissionRequest`, `Notification` with matchers and async support
+- **Session management** — `resume: sessionId` for cross-restart persistence, `forkSession` for alternatives, `ClaudeSDKClient` (Python) for multi-call sessions
+- **Cost tracking** — `ResultMessage.total_cost_usd`, per-model `modelUsage` map (TS), `cache_read_input_tokens` / `cache_creation_input_tokens`
+- **Streaming** — `StreamEvent` messages with `text_delta`, `input_json_delta` for real-time UI. Incompatible with extended thinking.
+- **Structured outputs** — JSON Schema / Zod / Pydantic for deterministic operator responses
+- **Extended thinking** — `maxThinkingTokens` for complex reasoning, adaptive thinking (Opus 4.6)
+- **Tool search** — automatic for 10+ tools, withholds definitions from context until needed
+- **Plugins** — programmatically add commands, agents, MCP servers to sessions at runtime
+- **File checkpointing** — snapshot and revert file changes across sessions
 
-<!-- TODO: Research whether Agent SDK supports tool-use streaming natively now.
-     If so, claude-drive's manual streaming wrapper in operatorManager may be
-     redundant and should be flagged for removal. -->
+### Claude Code Integration Points to Audit
+- **MCP channels** — bidirectional push communication (research preview). Could replace polling `drive_get_state`.
+- **Skills** — `.claude/skills/<name>/SKILL.md` with frontmatter. Could expose `/spawn`, `/operators`, `/costs` as slash commands.
+- **Plugins** — bundle skills, agents, hooks, MCP servers. Could claude-drive ship as a plugin?
+- **Agent teams** — parallel teammates with `TaskCreate`/`TaskCompleted`/`TeammateIdle` hooks. Competition or composition with operators?
+- **Elicitation** — MCP servers request user input inline during tool calls. Could replace approval queue.
+- **Hooks (Claude Code side)** — 18+ event types. Which should claude-drive consume or register?
+- **Status line** — custom command-based, receives model/cost/context/worktree data. Already partially integrated.
+- **Native worktrees** — `--worktree` flag, `isolation: worktree` in agent config, `WorktreeCreate`/`WorktreeRemove` hooks.
+- **Session transcripts** — `.jsonl` files at `~/.claude/projects/{project}/subagents/`. Could enable operator memory across restarts.
+
+### Claude API Features to Audit
+- **Prompt caching** — `cache_control: {"type": "ephemeral"}` with 5-min or 1-hour TTL. Cache hits cost 0.1x (90% savings). Are operator system prompts cached?
+- **Model routing** — Opus ($25/MTok) for complex planning, Sonnet ($15/MTok) for balanced work, Haiku ($5/MTok) for fast routing. Does claude-drive auto-select?
+- **Extended thinking** — `budget_tokens` for deep reasoning. Interleaved thinking with tool use (beta).
+- **Batch API** — 50% cost reduction for async operations. Could background operators use batching?
+- **Token counting** — free endpoint to estimate costs before dispatching.
+- **Structured outputs** — JSON schema enforcement for deterministic responses. Are operator outputs validated?
+- **Rate limit awareness** — `anthropic-ratelimit-*-remaining` headers. Cache-aware ITPM: only uncached tokens count. Backpressure?
+- **Fast mode** — `speed: "fast"` (Opus 4.6 beta) for lower-latency responses on simple tasks.
+- **Citations** — document grounding with source tracking. Could operators cite code references?
+- **Files API** — upload once, reference by `file_id`. Efficient for repeated large contexts.
 
 ---
 
@@ -146,21 +170,15 @@ description: "Verify build health"
 
 ---
 
-## Phase 2: Parallel Domain Deep-Dives (5 background agents)
+## Phase 2: Parallel Domain Deep-Dives (7 background agents)
 
 ### TodoWrite — Update tracking
 
-Mark Phase 1 completed. Add per-agent sub-tasks. Set Phase 2 in_progress.
+Mark Phase 1 completed. Add per-agent sub-tasks (Agents 2-8). Set Phase 2 in_progress.
 
-### Launch ALL 5 agents in ONE message (5 parallel Agent tool calls, all `run_in_background: true`)
+### Launch ALL 7 agents in ONE message (7 parallel Agent tool calls, all `run_in_background: true`)
 
-**CRITICAL: Send all 5 Agent calls in a single response. Do not launch them sequentially.**
-
-<!-- TODO: Add a 6th parallel agent — "Competitor & Ecosystem Analysis" (BACKGROUND).
-     Research: How does claude-drive compare to Aider, Continue.dev, Cline, Cursor's
-     agent mode? What unique value does multi-operator orchestration provide that
-     single-agent tools don't? This would feed directly into the Product Vision
-     section of Phase 3 and sharpen the "10x moment" articulation. -->
+**CRITICAL: Send all 7 Agent calls in a single response. Do not launch them sequentially.**
 
 <!-- TODO: Consider adding a "Dogfooding" agent that actually tries to USE claude-drive
      to perform a small task (e.g., "add a comment to store.ts") and reports the UX
@@ -417,6 +435,122 @@ description: "Research test coverage"
 
 ---
 
+### Agent 7: "Claude Code Ecosystem Fit" (BACKGROUND)
+
+```
+Tool: Agent
+subagent_type: "Explore"
+run_in_background: true
+description: "Research ecosystem integration"
+```
+
+**Prompt:**
+
+> Research how claude-drive at `/home/user/claude-drive` integrates with — and could better leverage — the Claude Code ecosystem. RESEARCH ONLY.
+>
+> **Read completely:**
+> - `src/mcpServer.ts` (MCP server — the integration surface)
+> - `src/cli.ts` (CLI entry, stdio transport)
+> - `src/operatorManager.ts` (SDK query calls)
+> - `src/operatorRegistry.ts` (operator lifecycle)
+> - `src/approvalQueue.ts` (approval flow)
+> - `src/statusLine.ts` and `src/statusFile.ts` (status integration)
+> - `src/sessionManager.ts` (session persistence)
+> - `src/worktreeManager.ts` (git worktree isolation)
+>
+> **For each Claude Code feature below, answer:**
+> - (a) Is claude-drive **duplicating** native functionality? If so, should it delegate?
+> - (b) Is claude-drive **ignoring** this feature? If so, what would integration unlock?
+> - (c) What's the **integration architecture**? (MCP tool, hook, skill, plugin, channel?)
+> - (d) **Effort estimate:** trivial / moderate / significant
+>
+> **Features to evaluate:**
+>
+> 1. **MCP Channels (bidirectional push)** — Could operator status transitions, activity events, and approval requests be pushed to Claude Code via channels instead of polled via `drive_get_state`? Map the existing `agentOutput` EventEmitter to channel events.
+>
+> 2. **Skills (slash commands)** — Could `/spawn`, `/operators`, `/costs`, `/drive-mode` be exposed as Claude Code skills? What SKILL.md frontmatter would each need? Could `context: fork` run skills as subagents?
+>
+> 3. **Plugin distribution** — Can claude-drive be packaged as a Claude Code plugin? What goes in the plugin manifest? How does stdio transport (cli.ts `serve-stdio`) vs HTTP transport affect plugin packaging? What capabilities does a plugin unlock vs standalone MCP?
+>
+> 4. **Agent teams** — How does Claude Code's native agent teams feature overlap with claude-drive's operator model? What does claude-drive offer that agent teams don't (lifecycle management, drive modes, cost governance, approval gates, TTS, session persistence)? Should claude-drive position as an orchestration layer ON TOP of agent teams?
+>
+> 5. **Native worktrees** — Claude Code has `--worktree` flag, `isolation: worktree` in agent config, `WorktreeCreate`/`WorktreeRemove` hooks. Is `worktreeManager.ts` duplicating native functionality? What should it keep (operator-to-worktree mapping, branch naming) vs delegate (low-level git operations)?
+>
+> 6. **MCP elicitation** — Could inline user questions via elicitation replace the `approvalQueue.ts` polling pattern? What are the limitations (e.g., background operators with no active tool call)?
+>
+> 7. **Status line** — The current status line reads `~/.claude-drive/status.json`. Could it show richer data: color-coded operator statuses, per-plan cost bars, approval queue badges, OSC 8 clickable links?
+>
+> 8. **Session transcripts** — Claude Code stores subagent transcripts at `~/.claude/projects/{project}/subagents/`. Could claude-drive inject prior transcripts on session restore, giving operators memory of previous work? What's the transcript format?
+>
+> 9. **Hooks (Claude Code side)** — Which of the 18+ Claude Code hook events should claude-drive register? Could `TaskCompleted` hooks update operator stats? Could `SubagentStart`/`SubagentStop` track operator lifecycle? Could `PreCompact` preserve critical operator context?
+>
+> 10. **SDK session management** — The SDK supports `resume: sessionId` for cross-restart sessions, `forkSession` for exploring alternatives, and `ClaudeSDKClient` for multi-call sessions. Is claude-drive using any of these? Could `resume` enable true operator persistence?
+>
+> 11. **SDK subagent definitions** — Could operators be defined as `AgentDefinition` objects with `description`, `prompt`, `tools`, `model`? Would this simplify `operatorManager.ts`?
+>
+> 12. **SDK custom tools** — Could claude-drive's MCP tools be defined using the SDK's `@tool` decorator / `tool()` helper with in-process MCP server (`createSdkMcpServer()`)? Would this be simpler than the raw MCP server?
+>
+> **Produce a competitive positioning summary:**
+> - What unique value does claude-drive provide vs Claude Code's built-in capabilities?
+> - Where is claude-drive redundant and should delegate to native?
+> - What's the "10x moment" — the thing users can't get without claude-drive?
+> - Suggested tagline for the product.
+
+---
+
+### Agent 8: "API Cost & Performance Optimization" (BACKGROUND)
+
+```
+Tool: Agent
+subagent_type: "Explore"
+run_in_background: true
+description: "Research API optimization"
+```
+
+**Prompt:**
+
+> Research API cost and performance optimization opportunities in claude-drive at `/home/user/claude-drive`. RESEARCH ONLY.
+>
+> **Read completely:**
+> - `src/operatorManager.ts` (SDK query calls — the primary API consumer)
+> - `src/planCostTracker.ts` (cost tracking)
+> - `src/config.ts` (configuration)
+> - `src/router.ts` (task routing)
+> - `src/operatorRegistry.ts` (operator roles and presets)
+>
+> **Analyze and answer:**
+>
+> 1. **PROMPT CACHING** — Are operator system prompts marked with `cache_control`? Operator prompts are likely repeated across turns — caching could reduce input costs by 90%. What's the estimated savings for a typical 5-operator session? Is the SDK handling caching automatically or does claude-drive need to opt in?
+>
+> 2. **MODEL ROUTING** — Does claude-drive use the same model for all operators? Could it route by role:
+>    - Researcher/reviewer → Haiku ($1→$5/MTok) for read-only analysis
+>    - Implementer → Sonnet ($3→$15/MTok) for balanced coding
+>    - Planner → Opus ($5→$25/MTok) for complex architectural reasoning
+>    - Router decisions → Haiku for fast, cheap routing in `router.ts`
+>    What's the estimated cost reduction from smart routing?
+>
+> 3. **EXTENDED THINKING** — Does claude-drive enable extended thinking for any operators? Should Planner operators use `maxThinkingTokens` for deeper reasoning? Is it configurable per role? Note: extended thinking disables streaming.
+>
+> 4. **TOKEN COUNTING** — Does claude-drive estimate costs before dispatching tasks? The free `count_tokens` endpoint could pre-calculate operator costs and warn before expensive operations. Could this feed into the approval gates?
+>
+> 5. **BATCH API** — Could non-urgent operator tasks use the Batch API for 50% savings? For example: code review, documentation generation, test writing that doesn't need immediate results. What architectural changes would batching require?
+>
+> 6. **STRUCTURED OUTPUTS** — Are operator responses validated against schemas? Could `operatorManager.ts` use structured outputs to guarantee response format? What schemas would each operator role produce?
+>
+> 7. **RATE LIMIT MANAGEMENT** — Does claude-drive read `anthropic-ratelimit-*-remaining` headers? With 5+ concurrent operators, rate limits become a real concern. Is there backpressure? Could the cost tracker also track rate limit headroom? Note: cached tokens don't count toward ITPM limits.
+>
+> 8. **STREAMING** — Is `includePartialMessages` enabled for real-time operator output? If not, users see nothing until the full response completes — poor UX for long-running tasks.
+>
+> 9. **FAST MODE** — Could simple operators (e.g., router, status queries) use `speed: "fast"` (Opus 4.6 beta) for lower latency?
+>
+> 10. **COST TRACKING ACCURACY** — Is `planCostTracker.ts` using `ResultMessage.total_cost_usd` (authoritative) or estimating? Is it tracking `cache_read_input_tokens` vs `cache_creation_input_tokens`? Is per-model breakdown available (TypeScript `modelUsage` map)?
+>
+> **Produce a cost optimization roadmap:**
+>    | Optimization | Estimated Savings | Effort | Priority |
+>    For each, include file references and implementation approach.
+
+---
+
 ## Phase 3: Collect, Save, and Synthesize
 
 **As each background agent completes** (you'll receive notifications):
@@ -428,10 +562,12 @@ description: "Research test coverage"
    - `docs/research/04-infrastructure.md`
    - `docs/research/05-tts-voice.md`
    - `docs/research/06-test-coverage.md`
+   - `docs/research/07-ecosystem-fit.md`
+   - `docs/research/08-api-optimization.md`
 
-**Once ALL 5 background agents have completed**, proceed to synthesis.
+**Once ALL 7 background agents have completed**, proceed to synthesis.
 
-### Agent 7: "Product Synthesizer" (FOREGROUND — blocking)
+### Agent 9: "Product Synthesizer" (FOREGROUND — blocking)
 
 ```
 Tool: Agent
@@ -441,11 +577,11 @@ description: "Synthesize vision doc"
 
 **Prompt:**
 
-> You are a product analyst. Read ALL research documents in `docs/research/` (files 01 through 06) at `/home/user/claude-drive/docs/research/`.
+> You are a product analyst. Read ALL research documents in `docs/research/` (files 01 through 08) at `/home/user/claude-drive/docs/research/`.
 >
 > claude-drive is built with `@anthropic-ai/claude-agent-sdk` and follows Unix design philosophy. Target platforms: Windows 11 (primary), iOS (low-hanging fruit), macOS/Linux (secondary).
 >
-> **Produce `docs/research/07-vision-and-requirements.md` with:**
+> **Produce `docs/research/09-vision-and-requirements.md` with:**
 >
 > 1. **PRODUCT VISION** — One-paragraph description. Target user. Value prop vs Claude Code alone. The "10x moment."
 >
@@ -474,15 +610,28 @@ description: "Synthesize vision doc"
 >    - **P3** (future): iOS native, web dashboard, team features
 >
 > 7. **AGENT SDK ARCHITECTURE REVIEW**
->    - Is claude-drive using the SDK idiomatically?
->    - Could the operator/registry pattern be simplified using SDK primitives?
+>    - Is claude-drive using the SDK idiomatically? Compare against SDK best practices (sessions, hooks, streaming, custom tools, structured outputs).
+>    - Could the operator/registry pattern be simplified using SDK primitives (AgentDefinition, subagents, session resume)?
 >    - Should claude-drive itself be decomposable into SDK agents?
+>    - Is claude-drive leveraging: prompt caching, model routing, extended thinking, streaming, structured outputs, tool search, file checkpointing?
 >
-> 8. **TECHNICAL DEBT & RISKS** — Production breakage risks, user frustration points, security concerns, architecture decisions to revisit.
+> 8. **CLAUDE CODE ECOSYSTEM FIT** (from 07-ecosystem-fit.md)
+>    - Summarize integration opportunities: channels, skills, plugins, elicitation, agent teams, native worktrees
+>    - What should claude-drive delegate to native Claude Code vs keep as unique value?
+>    - Plugin distribution strategy: standalone MCP vs Claude Code plugin
+>    - Positioning: "Claude Code gives you agents. claude-drive gives you a team." — validate or refine this tagline.
 >
-> 9. **RECOMMENDED NEXT SESSION** — Exactly what to build first, in what order, with estimated scope.
+> 9. **API COST OPTIMIZATION** (from 08-api-optimization.md)
+>    - Current cost profile and optimization opportunities
+>    - Model routing strategy by operator role
+>    - Prompt caching impact estimate
+>    - Rate limit management for concurrent operators
+>
+> 10. **TECHNICAL DEBT & RISKS** — Production breakage risks, user frustration points, security concerns, architecture decisions to revisit.
+>
+> 11. **RECOMMENDED NEXT SESSION** — Exactly what to build first, in what order, with estimated scope. Prioritize features that leverage SDK/Claude Code capabilities already available but unused.
 
-**Save output to `docs/research/07-vision-and-requirements.md`.**
+**Save output to `docs/research/09-vision-and-requirements.md`.**
 
 <!-- TODO: The Product Synthesizer should also produce a "Decision Log" —
      a list of architectural decisions made (or deferred) with rationale.
@@ -521,11 +670,26 @@ Compose a 1-page executive summary:
 | macOS | ? | ? |
 | Linux | ? | ? |
 
+## SDK & Ecosystem Utilization
+| Feature | Status | Impact |
+|---------|--------|--------|
+| Prompt caching | ? | ? |
+| Model routing | ? | ? |
+| Session resume | ? | ? |
+| Streaming output | ? | ? |
+| MCP channels | ? | ? |
+| Skills (slash commands) | ? | ? |
+| Plugin distribution | ? | ? |
+| Elicitation (approvals) | ? | ? |
+
 ## Top 5 MVP Blockers (ordered)
 1. ...
 
+## Top 5 Quick Wins (unused SDK/Claude Code features)
+1. ...
+
 ## Recommended Next Session
-[Exactly what to build, in what order]
+[Exactly what to build, in what order — prioritize leveraging existing SDK/Claude Code capabilities]
 
 ## Research Documents
 - 01-build-health.md
@@ -534,7 +698,9 @@ Compose a 1-page executive summary:
 - 04-infrastructure.md
 - 05-tts-voice.md
 - 06-test-coverage.md
-- 07-vision-and-requirements.md
+- 07-ecosystem-fit.md
+- 08-api-optimization.md
+- 09-vision-and-requirements.md
 ```
 
 Present this summary to the user as your final message.
@@ -563,10 +729,14 @@ Before declaring the sprint complete:
 - [ ] Build/test status definitively known with specific error list
 - [ ] Unix philosophy violations cataloged per-file with refactor recommendations
 - [ ] Agent SDK usage reviewed for idiomatic patterns vs anti-patterns
+- [ ] SDK features audited: sessions, hooks, streaming, custom tools, structured outputs, tool search, file checkpointing
+- [ ] Claude Code ecosystem integration mapped: channels, skills, plugins, elicitation, agent teams, worktrees, status line, transcripts, hooks
+- [ ] API cost optimization assessed: prompt caching, model routing, extended thinking, batch API, token counting, rate limits
+- [ ] Competitive positioning defined: what claude-drive offers vs native agent teams
 - [ ] Windows 11 compatibility issues listed per-file
 - [ ] iOS quick-win opportunities identified with effort estimates
-- [ ] All 8 research documents saved to `docs/research/`
-- [ ] Clear, ordered "what to build next" list exists
+- [ ] All 10 research documents saved to `docs/research/`
+- [ ] Clear, ordered "what to build next" list exists, prioritizing unused SDK/Claude Code capabilities
 - [ ] TodoWrite shows all tasks completed
 
 <!-- TODO: Add verification items for the new ideas above:
@@ -575,7 +745,10 @@ Before declaring the sprint complete:
      - [ ] sprint-results.json produced and parseable
      - [ ] GitHub issues created for P0 blockers
      - [ ] Decision log (ADRs) started with at least 3 entries
-     - [ ] Success metrics defined and baselined -->
+     - [ ] Success metrics defined and baselined
+     - [ ] Plugin manifest drafted for Claude Code plugin distribution
+     - [ ] SKILL.md files drafted for /spawn, /operators, /costs slash commands
+     - [ ] Channel event schema defined for operator status push -->
 
 <!-- TODO: Add a "Re-Run Protocol" section explaining how to run this sprint again
      after significant changes. Should it diff against previous sprint-results.json?
