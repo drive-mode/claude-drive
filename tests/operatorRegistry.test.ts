@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 import { OperatorRegistry } from "../src/operatorRegistry.js";
 
 describe("OperatorRegistry", () => {

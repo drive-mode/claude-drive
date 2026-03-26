@@ -3,7 +3,7 @@
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
 import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
-import type { ResultMessage, SystemMessage, RateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultSuccess, SDKResultError, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
@@ -71,11 +71,21 @@ export function buildSubagentDefs(
 
 // ── Run operator ────────────────────────────────────────────────────────────
 
+export interface TaskResultStats {
+  totalCostUsd: number;
+  durationMs: number;
+  apiDurationMs: number;
+  numTurns: number;
+}
+
+export type OnTaskComplete = (op: OperatorContext, stats: TaskResultStats) => void;
+
 export interface RunOperatorOptions {
   cwd?: string;
   mcpServerUrl?: string;
   maxTurns?: number;
   allOperators?: OperatorContext[];
+  onTaskComplete?: OnTaskComplete;
 }
 
 export async function runOperator(
@@ -144,21 +154,35 @@ export async function runOperator(
       },
     },
   })) {
-    const m = msg as unknown as (SystemMessage & { session_id?: string }) | RateLimitEvent | ResultMessage;
     const mAny = msg as { type?: string };
 
-    if (mAny.type === "system" && (m as SystemMessage).subtype === "init") {
-      const sid = (m as SystemMessage & { session_id?: string }).session_id;
-      if (sid) op.sessionId = sid;
+    if (mAny.type === "system") {
+      const sysMsg = msg as unknown as SDKSystemMessage;
+      if (sysMsg.subtype === "init") {
+        const sid = (sysMsg as SDKSystemMessage & { session_id?: string }).session_id;
+        if (sid) op.sessionId = sid;
+      }
     } else if (mAny.type === "rate_limit_event") {
       logActivity(op.name, "Rate limited — pausing");
       speak("Rate limited. Pausing.");
-      const info = (m as RateLimitEvent).rate_limit_info as { status?: string; resets_at?: string } | undefined;
+      const rle = msg as unknown as SDKRateLimitEvent;
+      const info = rle.rate_limit_info;
       if (info) {
-        console.warn(`[OperatorManager] rate limit status: ${info.status}, resets_at: ${info.resets_at}`);
+        console.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
       }
-    } else if ((m as ResultMessage).result !== undefined) {
-      logActivity(op.name, (m as ResultMessage).result as string);
+    } else if (mAny.type === "result") {
+      const resultMsg = msg as unknown as (SDKResultSuccess | SDKResultError);
+      if (!resultMsg.is_error && "result" in resultMsg && resultMsg.result !== undefined) {
+        logActivity(op.name, (resultMsg as SDKResultSuccess).result);
+      }
+      // Extract cost stats from result message (both success and error have these)
+      const stats: TaskResultStats = {
+        totalCostUsd: resultMsg.total_cost_usd ?? 0,
+        durationMs: resultMsg.duration_ms ?? 0,
+        apiDurationMs: resultMsg.duration_api_ms ?? 0,
+        numTurns: resultMsg.num_turns ?? 0,
+      };
+      opts.onTaskComplete?.(op, stats);
       speak(`${op.name} done.`);
     }
   }

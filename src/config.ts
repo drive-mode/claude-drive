@@ -25,7 +25,7 @@ const DEFAULTS: Record<string, unknown> = {
   // Operators
   "operators.maxConcurrent": 3,
   "operators.maxSubagents": 2,
-  "operators.namePool": ["Alpha", "Beta", "Gamma", "Delta", "Echo", "Foxtrot"],
+  "operators.namePool": [],  // empty = numbered "Operator 1", "Operator 2", …; set custom names to override
   "operators.defaultPermissionPreset": "standard",
 
   // MCP server
@@ -55,6 +55,16 @@ const DEFAULTS: Record<string, unknown> = {
   "approvalGates.blockPatterns": [],
   "approvalGates.warnPatterns": [],
   "approvalGates.logPatterns": [],
+
+  // Status line
+  "statusLine.enabled": true,
+  "statusLine.padding": 2,
+  "statusLine.showModel": true,
+  "statusLine.showContext": true,
+  "statusLine.showCost": true,
+  "statusLine.showDriveState": true,
+  "statusLine.showOperatorTask": true,
+  "statusLine.maxTaskLength": 40,
 
   // Router
   "router.llmEnabled": false,

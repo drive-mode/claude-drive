@@ -62,6 +62,14 @@ export function minPreset(a: PermissionPreset, b: PermissionPreset): PermissionP
   return PRESET_ORDER.indexOf(a) <= PRESET_ORDER.indexOf(b) ? a : b;
 }
 
+export interface OperatorStats {
+  totalCostUsd: number;
+  totalDurationMs: number;
+  totalApiDurationMs: number;
+  totalTurns: number;
+  taskCount: number;        // number of tasks completed
+}
+
 export interface OperatorContext {
   id: string;
   name: string;
@@ -82,6 +90,7 @@ export interface OperatorContext {
   headCommit?: string;
   syncState?: SyncState;
   sessionId?: string;
+  stats: OperatorStats;
 }
 
 export interface SpawnOptions {
@@ -91,13 +100,12 @@ export interface SpawnOptions {
   role?: OperatorRole;
 }
 
-const FALLBACK_NAMES = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta"];
-
 function getNamePool(): string[] {
   const pool = getConfig<string[]>("operators.namePool");
-  return Array.isArray(pool) && pool.length > 0
-    ? pool.filter((n) => typeof n === "string" && n.trim().length > 0).map((n) => String(n).trim())
-    : FALLBACK_NAMES;
+  if (Array.isArray(pool) && pool.length > 0) {
+    return pool.filter((n) => typeof n === "string" && n.trim().length > 0).map((n) => String(n).trim());
+  }
+  return []; // empty = use numbered "Operator 1", "Operator 2", …
 }
 
 type RegistryListener = () => void;
@@ -147,6 +155,7 @@ export class OperatorRegistry {
       id, name: resolvedName, voice: undefined, task, status: "active",
       createdAt: Date.now(), memory: [], visibility: "shared",
       depth, parentId, permissionPreset: preset, role, systemHint: roleTemplate?.systemHint,
+      stats: { totalCostUsd: 0, totalDurationMs: 0, totalApiDurationMs: 0, totalTurns: 0, taskCount: 0 },
     };
     this.operators.set(id, op);
     this.nameToId.set(resolvedName.toLowerCase(), id);
@@ -161,10 +170,15 @@ export class OperatorRegistry {
   }
 
   private nextAvailableName(): string {
-    for (const name of getNamePool()) {
+    const pool = getNamePool();
+    // If user set custom names, use those first
+    for (const name of pool) {
       if (!this.nameToId.has(name.toLowerCase())) return name;
     }
-    return `Operator${this.operators.size + 1}`;
+    // Default: "Operator 1", "Operator 2", …
+    let n = 1;
+    while (this.nameToId.has(`operator ${n}`)) n++;
+    return `Operator ${n}`;
   }
 
   private nextAvailableNameFrom(base: string): string {
@@ -344,6 +358,32 @@ export class OperatorRegistry {
     if (state.syncState !== undefined) op.syncState = state.syncState;
     this.emitChange();
     return true;
+  }
+
+  /** Record stats from a completed task (SDK result message). */
+  recordTaskStats(idOrName: string, cost: number, durationMs: number, apiDurationMs: number, turns: number): boolean {
+    const op = this.findByNameOrId(idOrName);
+    if (!op) return false;
+    op.stats.totalCostUsd += cost;
+    op.stats.totalDurationMs += durationMs;
+    op.stats.totalApiDurationMs += apiDurationMs;
+    op.stats.totalTurns += turns;
+    op.stats.taskCount += 1;
+    this.emitChange();
+    return true;
+  }
+
+  /** Get aggregate stats across all operators. */
+  getTotalStats(): OperatorStats {
+    const totals: OperatorStats = { totalCostUsd: 0, totalDurationMs: 0, totalApiDurationMs: 0, totalTurns: 0, taskCount: 0 };
+    for (const op of this.operators.values()) {
+      totals.totalCostUsd += op.stats.totalCostUsd;
+      totals.totalDurationMs += op.stats.totalDurationMs;
+      totals.totalApiDurationMs += op.stats.totalApiDurationMs;
+      totals.totalTurns += op.stats.totalTurns;
+      totals.taskCount += op.stats.taskCount;
+    }
+    return totals;
   }
 
   static getRoleTemplate(role: OperatorRole): RoleTemplate { return ROLE_TEMPLATES[role]; }
