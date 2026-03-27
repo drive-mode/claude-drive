@@ -421,3 +421,336 @@ graph TD
 | Promise-chain mutex for worktrees | Git operations must be serialized; no file-level locks needed |
 | Hook exit code 2 = abort | Convention that lets hooks cancel operations without killing the process |
 | Skill files as Markdown + YAML | Human-readable, version-controllable prompt templates |
+
+---
+
+## 12. User Journey Map
+
+The end-to-end experience from install to productive daily use. Satisfaction scores highlight friction points.
+
+```mermaid
+journey
+    title claude-drive User Journey: Install to Productive Use
+    section Installation
+      npm install -g claude-drive: 5: User
+      claude-drive start: 4: User
+      Copy MCP config to settings.json: 3: User
+      claude-drive statusline install: 4: User
+    section First Session
+      Open second terminal, run claude: 5: User
+      Claude auto-discovers MCP tools: 5: Claude Code
+      Ask Claude to spawn first operator: 5: User
+      Operator runs task, TTS narrates: 5: User, claude-drive
+      See status line update with costs: 4: User
+    section Multi-Operator Workflow
+      Spawn architect (planner role): 5: User
+      Architect produces plan in worktree: 5: claude-drive
+      Spawn builder (implementer role): 5: User
+      Builder works in isolated branch: 5: claude-drive
+      Spawn reviewer (readonly role): 4: User
+      Reviewer flags issues via escalation: 4: claude-drive
+      Approve or deny safety-gated commands: 3: User
+      Merge builder worktree to main: 5: User
+      Dismiss completed operators: 5: User
+    section Session Management
+      Checkpoint current state: 5: User
+      Fork session to try alternative: 4: User
+      Restore checkpoint after bad path: 4: User
+      Review costs with drive_get_costs: 5: User
+    section Daily Productive Use
+      Resume saved session next day: 4: User
+      Memory recalls prior decisions: 5: claude-drive
+      Auto-dream consolidates stale memory: 5: claude-drive
+      Custom hooks fire on lifecycle events: 4: claude-drive
+      Skills load reusable prompt templates: 5: User
+```
+
+---
+
+## 13. User-System Interaction Flow
+
+How user intent flows through Claude Code, MCP, and claude-drive — and how feedback returns through terminal output, status line, TTS, and approval prompts.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CC as Claude Code CLI<br/>(Terminal 2)
+    participant MCP as MCP Server<br/>(:7891)
+    participant REG as Operator Registry
+    participant OM as Operator Manager<br/>(SDK query loop)
+    participant AG as Approval Gates
+    participant SL as Status Line<br/>(status.json)
+    participant TTS as TTS Engine
+    participant AQ as Approval Queue
+
+    Note over User,CC: User types natural language in Claude Code
+    User->>CC: "Spawn an implementer named builder<br/>to add auth middleware"
+    CC->>MCP: operator_spawn(name="builder",<br/>role="implementer", task="add auth")
+    MCP->>REG: spawn("builder", task, {role, preset})
+    REG-->>MCP: OperatorContext {id, name, status}
+    MCP-->>CC: "Spawned operator: builder (standard)"
+    CC-->>User: Shows spawn confirmation
+
+    User->>CC: "Run the task on builder"
+    CC->>MCP: drive_run_task(task="add auth middleware",<br/>operatorName="builder")
+    MCP->>MCP: Check activeCount < maxConcurrent
+    MCP->>OM: runOperator(op, task)
+    OM->>OM: Create AbortController
+    OM->>OM: buildMemoryContext(opId)
+    OM->>OM: buildOperatorSystemPrompt()
+    OM->>TTS: speak("builder starting: add auth middleware")
+    TTS-->>User: Audio narration
+
+    loop SDK query() — streaming tool calls
+        OM->>OM: SDK processes tool calls
+        OM->>MCP: agent_screen_activity("editing routes.ts")
+        MCP->>SL: flushStatus() → status.json
+        SL-->>User: Status line updates in Claude Code
+
+        Note over OM,AG: Operator attempts: git push --force
+        OM->>AG: getGateResult("git push --force", opId)
+        AG-->>OM: action: WARN, pattern: "force push"
+        OM->>AQ: requestApproval(op, cmd, "warn")
+        AQ-->>User: Approval prompt in terminal
+        User->>AQ: approve / deny
+        AQ-->>OM: approved=true → execute
+
+        OM->>MCP: agent_screen_file("builder",<br/>"src/middleware/auth.ts", "created")
+        OM->>MCP: agent_screen_decision("builder",<br/>"Using JWT for stateless auth")
+    end
+
+    OM->>OM: Extract result stats (cost, turns, duration)
+    OM->>REG: recordTaskStats(op, cost, duration, turns)
+    OM->>TTS: speak("builder done.")
+    TTS-->>User: Audio: "builder done"
+    OM->>SL: flushStatus()
+    SL-->>User: Status line: cost updated
+
+    User->>CC: "What did builder do?"
+    CC->>MCP: drive_get_state()
+    MCP-->>CC: Full state snapshot
+    CC-->>User: Summary of operators, costs, pending approvals
+```
+
+---
+
+## 14. Multi-Operator Workflow Example
+
+A concrete scenario: architect plans, builder implements, reviewer reviews. Shows timeline, worktree branches, and how operators coordinate via shared memory.
+
+### Timeline View
+
+```mermaid
+gantt
+    title Multi-Operator Workflow: Feature Implementation
+    dateFormat X
+    axisFormat %s
+
+    section Setup
+    claude-drive start (Terminal 1)         :done, t0, 0, 2
+    claude (Terminal 2)                     :done, t1, 2, 4
+
+    section Architect (planner, readonly)
+    Spawn architect                         :done, a0, 4, 5
+    Create worktree drive/op/architect      :done, a1, 5, 7
+    Analyze codebase, produce plan          :active, a2, 7, 20
+    Plan checkpoint saved                   :milestone, a3, 20, 20
+    Dismiss architect                       :done, a4, 20, 21
+
+    section Builder (implementer, standard)
+    Spawn builder                           :done, b0, 20, 21
+    Create worktree drive/op/builder        :done, b1, 21, 23
+    Implement auth middleware               :active, b2, 23, 45
+    Implement route guards                  :active, b3, 45, 60
+    Safety gate rm -rf triggered            :crit, b4, 50, 52
+    User approves after review              :done, b5, 52, 53
+    Write tests                             :active, b6, 60, 70
+    Builder checkpoint saved                :milestone, b7, 70, 70
+
+    section Reviewer (reviewer, readonly)
+    Spawn reviewer                          :done, r0, 70, 71
+    Create worktree drive/op/reviewer       :done, r1, 71, 73
+    Review builder changes                  :active, r2, 73, 85
+    Escalate missing error handling         :crit, r3, 80, 82
+    Report findings via agent_screen        :done, r4, 85, 87
+    Dismiss reviewer                        :done, r5, 87, 88
+
+    section Integration
+    Builder fixes review findings           :active, i1, 88, 95
+    Merge builder worktree to main          :done, i2, 95, 97
+    Dismiss builder                         :done, i3, 97, 98
+    Final session checkpoint                :milestone, i4, 98, 98
+```
+
+### Coordination View
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CC as Claude Code
+    participant Arch as Architect<br/>(planner, readonly)
+    participant Build as Builder<br/>(implementer, standard)
+    participant Rev as Reviewer<br/>(readonly)
+    participant WT as Worktree Manager
+    participant Mem as Memory Store
+
+    User->>CC: "Spawn architect to plan auth feature"
+    CC->>Arch: operator_spawn(role=planner)
+    CC->>WT: worktree_create(architect, HEAD)
+    WT-->>Arch: drive/op/architect branch
+
+    Arch->>Arch: Analyze codebase (read-only)
+    Arch->>Mem: memory_remember(decision,<br/>"Use JWT with refresh tokens")
+    Arch->>Mem: memory_remember(fact,<br/>"Auth routes need /login, /refresh, /logout")
+    Arch->>CC: agent_screen_decision("Plan complete:<br/>3 files, 2 new endpoints")
+
+    User->>CC: "Dismiss architect, spawn builder"
+    CC->>Arch: operator_dismiss(architect)
+    CC->>Build: operator_spawn(role=implementer)
+    CC->>WT: worktree_create(builder, HEAD)
+    WT-->>Build: drive/op/builder branch
+
+    Note over Build,Mem: Builder inherits shared memories
+    Build->>Mem: memory_recall(kinds=[decision, fact])
+    Mem-->>Build: "Use JWT...", "Auth routes need..."
+
+    Build->>Build: Implement auth middleware
+    Build->>Build: Implement route guards
+
+    Note over Build: Safety gate triggers on dangerous command
+    Build-->>User: approval_request(rm -rf node_modules, block)
+    User-->>Build: approval_respond(approved=true)
+
+    Build->>Build: Write tests
+    User->>CC: "Checkpoint, then spawn reviewer"
+    CC->>CC: session_checkpoint("pre-review")
+
+    CC->>Rev: operator_spawn(role=reviewer)
+    CC->>WT: worktree_create(reviewer, drive/op/builder)
+    Rev->>Rev: Review builder's diff (read-only)
+    Rev->>CC: operator_escalate(warning,<br/>"Missing error handling in /refresh")
+    Rev->>Mem: memory_remember(correction,<br/>"Must handle expired token edge case")
+
+    User->>CC: "Dismiss reviewer, have builder fix it"
+    CC->>Rev: operator_dismiss(reviewer)
+    Build->>Mem: memory_recall(kinds=[correction])
+    Mem-->>Build: "Must handle expired token..."
+    Build->>Build: Fix error handling
+
+    User->>CC: "Merge builder to main"
+    CC->>WT: worktree_merge(builder, main)
+    CC->>Build: operator_dismiss(builder)
+    CC->>CC: session_checkpoint("feature-complete")
+```
+
+---
+
+## 15. Session Lifecycle
+
+How session state is preserved, checkpointed, forked, and restored.
+
+### State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: claude-drive start
+
+    state Running {
+        [*] --> Active
+        Active --> Active: spawn/dismiss operators
+        Active --> Active: drive_run_task
+        Active --> Active: mode changes
+
+        Active --> Checkpointed: session_checkpoint
+        Checkpointed --> Active: continue working
+        Checkpointed --> Forked: session_fork
+        Checkpointed --> Restored: session_restore
+
+        Restored --> Active: operators re-spawned,<br/>memory imported
+
+        Forked --> Active: new session ID,<br/>independent timeline
+    }
+
+    Running --> Saved: session_save
+    Saved --> Running: session_restore
+
+    Running --> Shutdown: SIGINT / ctrl-c
+    Shutdown --> [*]: cleanup port file,<br/>status file, hooks
+```
+
+### Checkpoint Data Flow
+
+```mermaid
+flowchart TD
+    subgraph Create ["Checkpoint Create"]
+        CC1["session_checkpoint(name?)"] --> CC2["Snapshot registry.list()"]
+        CC1 --> CC3["Snapshot driveMode state"]
+        CC1 --> CC4["exportAll() from memoryStore"]
+        CC1 --> CC5["Copy activity log"]
+        CC2 --> CC6["atomicWriteJSON(<br/>sessions/id/checkpoints/cpId.json)"]
+        CC3 --> CC6
+        CC4 --> CC6
+        CC5 --> CC6
+        CC6 --> CC7{"checkpoints > max (20)?"}
+        CC7 -->|Yes| CC8["Prune oldest"]
+        CC7 -->|No| CC9["Done"]
+    end
+
+    subgraph Restore ["Checkpoint Restore"]
+        CR1["session_restore(cpId)"] --> CR2["Find checkpoint"]
+        CR2 --> CR3["Dismiss all current operators"]
+        CR3 --> CR4["Re-spawn from snapshot"]
+        CR4 --> CR5["importBulk(checkpoint.memory)"]
+        CR5 --> CR6["Restore driveMode state"]
+    end
+
+    subgraph Fork ["Session Fork"]
+        SF1["session_fork(cpId?, name?)"] --> SF2{"checkpointId?"}
+        SF2 -->|Yes| SF3["Find existing checkpoint"]
+        SF2 -->|No| SF4["Create checkpoint now"]
+        SF3 --> SF5["Generate new session ID"]
+        SF4 --> SF5
+        SF5 --> SF6["Clone with new sessionId"]
+        SF6 --> SF7["metadata: forkedFrom, timestamp"]
+        SF7 --> SF8["Write to new session dir"]
+    end
+```
+
+---
+
+## 16. Status Line & Feedback Channels
+
+The four channels through which the system communicates back to the user during operation.
+
+```mermaid
+flowchart LR
+    subgraph System ["claude-drive daemon"]
+        OM["operatorManager<br/>SDK query loop"]
+        AO["agentOutput<br/>event emitter"]
+        SL["statusFile<br/>status.json writer"]
+        TTS["tts engine<br/>edgeTts/piper/say"]
+        AQ["approvalQueue<br/>pending requests"]
+    end
+
+    OM -->|"activity, file,<br/>decision events"| AO
+    OM -->|"cost, turns,<br/>operator stats"| SL
+    OM -->|"narration text"| TTS
+    OM -->|"dangerous cmd<br/>detected"| AQ
+
+    subgraph Feedback ["User Feedback Channels"]
+        T["Terminal Output<br/>Color-coded, timestamped<br/>14:32:05 [alice] editing auth.ts"]
+        S["Status Line<br/>Drive ● agent  $42.15<br/>▶ alice [active] 28T"]
+        V["Voice Narration<br/>Audio: 'alice starting:<br/>add auth middleware'"]
+        A["Approval Prompt<br/>[block] rm -rf dist<br/>Approve? (30s timeout)"]
+    end
+
+    AO --> T
+    SL --> S
+    TTS --> V
+    AQ --> A
+
+    T -->|"read"| User((User))
+    S -->|"glance"| User
+    V -->|"listen"| User
+    A -->|"respond"| User
+```
