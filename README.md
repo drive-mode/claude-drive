@@ -6,11 +6,17 @@ claude-drive gives you a steering wheel for your Claude agents — spawn, switch
 
 ## What It Does
 
-- **Multi-operator orchestration** — spawn named operators (Claude subagents) and switch between them mid-session
+- **Multi-operator orchestration** — spawn named operators (Claude subagents) and switch between them mid-session, with configurable concurrency limits (default 3)
 - **Voice narration** — TTS output via edgeTts, piper, or system `say` backends
 - **Git worktree isolation** — each operator gets its own worktree; merge when done
-- **MCP server** — exposes Drive tools to Claude Code via `localhost:7891`
-- **OpenTelemetry observability** — trace operator activity and session state
+- **MCP server** — exposes 46+ Drive tools to Claude Code via `localhost:7891`
+- **Task cancellation** — AbortController wired through operator lifecycle; `dismiss` cancels running tasks and cascades to children
+- **Structured memory** — typed memory entries with confidence decay, contextual retrieval, and automatic consolidation (auto-dream)
+- **Session checkpoints** — snapshot and fork session state at any point
+- **Lifecycle hooks** — pre/post hooks for operator events
+- **Dynamic skills** — load and register skills at runtime
+- **Safety gates** — approval gates with per-operator throttling for dangerous operations
+- **Atomic persistence** — all file writes use tmp+rename pattern to prevent corruption
 - **One-shot tasks** — run a prompt headlessly without starting a full session
 
 Ported from [`cursor-drive`](https://github.com/hhalperin/cursor-drive) (the Cursor IDE extension), replacing VS Code APIs with Node.js equivalents.
@@ -19,7 +25,7 @@ Ported from [`cursor-drive`](https://github.com/hhalperin/cursor-drive) (the Cur
 
 ```bash
 npm install
-npm run build
+npm run compile
 ```
 
 Global install (optional):
@@ -53,6 +59,7 @@ claude-drive run "refactor the auth module"
 claude-drive config set tts.backend edgeTts
 claude-drive config set tts.enabled true
 claude-drive config set mcp.port 7891
+claude-drive config set operators.maxConcurrent 3
 ```
 
 Config file: `~/.claude-drive/config.json`
@@ -60,25 +67,43 @@ Config file: `~/.claude-drive/config.json`
 ## Architecture
 
 ```
-cli.ts
+cli.ts (fail-fast SDK validation)
   ├── driveMode.ts          — state machine (active operator + subMode)
-  ├── operatorRegistry.ts   — operator lifecycle (spawn/switch/dismiss/merge)
+  ├── operatorRegistry.ts   — operator lifecycle (spawn/switch/dismiss/merge + AbortController)
   ├── operatorManager.ts    — wraps @anthropic-ai/claude-agent-sdk query() per operator
-  ├── mcpServer.ts          — MCP server on :7891, exposes Drive tools to Claude Code
+  ├── mcpServer.ts          — MCP server on :7891, exposes Drive tools, maxConcurrent enforcement
   ├── agentOutput.ts        — terminal renderer (Ink/React TUI)
   ├── tts.ts                — TTS dispatch (edgeTts → piper → say)
+  ├── memoryStore.ts        — typed memory entries with confidence decay
+  ├── memoryManager.ts      — memory retrieval and contextual search
+  ├── autoDream.ts          — automatic memory consolidation during idle
+  ├── checkpoint.ts         — session state snapshots and fork support
+  ├── hooks.ts              — pre/post lifecycle hooks for operator events
+  ├── skillLoader.ts        — dynamic skill loading and registration
+  ├── approvalGates.ts      — safety gates with per-operator throttling
+  ├── approvalQueue.ts      — approval queue for dangerous operations
   ├── sessionManager.ts     — session lifecycle
+  ├── sessionStore.ts       — session persistence (atomic writes)
   ├── worktreeManager.ts    — git worktree create/merge/cleanup
-  ├── store.ts              — JSON KV store (persists state to disk)
+  ├── atomicWrite.ts        — shared atomic write utility (tmp + rename)
+  ├── store.ts              — JSON KV store (persists state, atomic writes)
   └── config.ts             — config loader (~/.claude-drive/config.json)
 ```
 
 ## Development
 
 ```bash
+npm run compile  # TypeScript build
 npm run watch    # TypeScript watch mode
-npm test         # Jest unit tests
+npm test         # Jest unit tests (176 tests across 17 files)
 ```
+
+## Pinned Dependencies
+
+SDK versions are pinned to exact versions (not `latest`) for reproducible builds:
+
+- `@anthropic-ai/claude-agent-sdk@0.2.77`
+- `@anthropic-ai/sdk@0.79.0`
 
 ## Relationship to cursor-drive
 

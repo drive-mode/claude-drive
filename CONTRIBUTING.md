@@ -28,9 +28,17 @@ This project shares logic with [`cursor-drive`](https://github.com/hhalperin/cur
 
 ```bash
 npm install
+npm run compile  # TypeScript build
 npm run watch    # TypeScript watch
-npm test         # Jest (requires --experimental-vm-modules)
+npm test         # Jest (176 tests across 17 files, requires --experimental-vm-modules)
 ```
+
+## Key Conventions
+
+- All persistence must use `atomicWriteJSON()` from `src/atomicWrite.ts` — never raw `fs.writeFileSync` for JSON state files
+- SDK versions are pinned to exact versions in `package.json` — never use `latest`
+- ESM imports require `.js` extensions on all relative paths
+- Named exports only — no default exports in `src/`
 
 ## Pull Requests
 
