@@ -93,6 +93,7 @@ export interface RunOperatorOptions {
   maxTurns?: number;
   allOperators?: OperatorContext[];
   onTaskComplete?: OnTaskComplete;
+  abortSignal?: AbortSignal;
 }
 
 export async function runOperator(
@@ -109,6 +110,10 @@ export async function runOperator(
     console.error("[OperatorManager] @anthropic-ai/claude-agent-sdk not installed. Run: npm install @anthropic-ai/claude-agent-sdk");
     return;
   }
+
+  // Set up abort controller for task cancellation on dismiss
+  const controller = new AbortController();
+  op.abortController = controller;
 
   const mcpPort = getConfig<number>("mcp.port") ?? 7891;
   const mcpUrl = opts.mcpServerUrl ?? `http://localhost:${mcpPort}/mcp`;
@@ -130,6 +135,8 @@ export async function runOperator(
 
   speak(`${op.name} starting: ${task}`);
   logActivity(op.name, `Starting task: ${task}`);
+
+  const signal = opts.abortSignal ?? controller.signal;
 
   for await (const msg of queryFn({
     prompt: task,
@@ -169,6 +176,12 @@ export async function runOperator(
       },
     },
   })) {
+    // Check if task was cancelled (e.g., operator dismissed)
+    if (signal?.aborted) {
+      logActivity(op.name, "Task cancelled.");
+      break;
+    }
+
     const mAny = msg as { type?: string };
 
     if (mAny.type === "system") {

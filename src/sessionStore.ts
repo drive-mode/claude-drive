@@ -7,6 +7,7 @@ import path from "path";
 import os from "os";
 import type { OperatorContext } from "./operatorRegistry.js";
 import type { DriveOutputEvent } from "./agentOutput.js";
+import { atomicWriteJSON } from "./atomicWrite.js";
 
 const SESSIONS_DIR = path.join(os.homedir(), ".claude-drive", "sessions");
 
@@ -26,7 +27,7 @@ function ensureDir(): void {
 export function saveSession(snapshot: SessionSnapshot): void {
   ensureDir();
   const filePath = path.join(SESSIONS_DIR, `${snapshot.id}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), "utf-8");
+  atomicWriteJSON(filePath, snapshot);
 }
 
 export function loadSession(id: string): SessionSnapshot | undefined {
