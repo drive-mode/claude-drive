@@ -5,17 +5,18 @@
 > **Built with:** `@anthropic-ai/claude-agent-sdk`
 > **Design philosophy:** Unix — do one thing well, compose small tools, text as interface
 > **Platform priority:** (1) Windows 11 desktop, (2) iOS low-hanging fruit, (3) macOS/Linux
+> **Sprint duration:** ~45–60 min wall-clock with parallel agents. The sprint launches 7+ agents that produce 8 docs — expect long-running background work. Don't abandon thinking it's stuck.
 
-<!-- TODO: Add a "Sprint Duration" estimate — this prompt generates 8 docs via 7+ agents.
-     Budget ~45-60 min wall-clock with parallel agents. Surface that so runners don't
-     abandon a sprint thinking it's stuck. -->
+---
 
-<!-- TODO: Add a "Prerequisites" checklist before running the sprint:
-     - [ ] `npm install` completed
-     - [ ] `out/` directory exists (or `npm run compile` first)
-     - [ ] Git working tree is clean (research writes docs/ — dirty state may confuse agents)
-     - [ ] Sufficient API credits for 7 agent invocations (Opus 4.6 × ~50k tokens each)
-     This would prevent the most common first-run failures. -->
+## Prerequisites
+
+Before running the sprint, verify:
+
+- [ ] `npm install` completed
+- [ ] `out/` directory exists (run `npm run compile` first if not)
+- [ ] Git working tree is clean (the sprint writes to `docs/` — dirty state may confuse agents)
+- [ ] Sufficient API credits for 7 agent invocations (Opus 4.6 × ~50k tokens each)
 
 ---
 
@@ -39,11 +40,7 @@ Every file and function in the codebase must be evaluated against these criteria
 | **No premature abstraction** | Is there abstraction without multiple consumers? Flag helpers/utilities used exactly once. |
 | **No dead code** | Flag every unused export, unreachable branch, config key read but never set (or vice versa). |
 | **Explicit over clever** | Flag any "magic" — implicit behavior, hidden side effects, non-obvious defaults. |
-
-<!-- TODO: Add a "Composability" principle row:
-     | **Pipe-friendly** | Could this module's output be piped to another tool? Does it emit
-     structured (JSON) output on stdout and errors on stderr? |
-     This is the most actionable Unix principle for a CLI tool and it's missing. -->
+| **Pipe-friendly** | Could this module's output be piped to another tool? Does it emit structured (JSON) output on stdout and errors on stderr? |
 
 <!-- TODO: Consider a scoring rubric (1-5 per principle per file) so agents produce
      machine-readable scores, not just prose. Makes Phase 3 synthesis deterministic
