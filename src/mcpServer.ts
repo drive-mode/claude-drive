@@ -4,6 +4,7 @@
  * Adapted from cursor-drive: removed vscode deps, wired to agentOutput + config.
  */
 import http from "http";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -25,7 +26,7 @@ import { remember, recall, correct, forget, shareMemory } from "./memoryManager.
 import { memoryStore } from "./memoryStore.js";
 import type { MemoryKind } from "./memoryStore.js";
 import { hookRegistry } from "./hooks.js";
-import type { HookEvent, HookType } from "./hooks.js";
+import type { HookEvent } from "./hooks.js";
 import { skillRegistry, loadDefaultSkills } from "./skillLoader.js";
 import {
   createCheckpoint, restoreCheckpoint, listCheckpoints, forkSession,
@@ -50,7 +51,9 @@ export function readPortFile(): number | undefined {
 function writePortFile(port: number): void {
   const filePath = getPortFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, String(port), "utf-8");
+  const tmp = filePath + ".tmp";
+  fs.writeFileSync(tmp, String(port), "utf-8");
+  fs.renameSync(tmp, filePath);
 }
 
 function deletePortFile(): void {
@@ -68,8 +71,21 @@ export interface McpServerOptions {
   dreamDaemon?: AutoDreamDaemon;
 }
 
-// Map of sessionId → { transport, server }
-const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+// Map of sessionId → { transport, server, lastAccess }
+const MAX_SESSIONS = 100;
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer; lastAccess: number }>();
+
+function cleanupStaleSessions(): void {
+  const now = Date.now();
+  for (const [id, entry] of sessions) {
+    if (now - entry.lastAccess > SESSION_TTL_MS) {
+      sessions.delete(id);
+    }
+  }
+}
 
 function buildMcpServer(opts: McpServerOptions): McpServer {
   const { registry, driveMode } = opts;
@@ -445,33 +461,9 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
 
   // ── Hook tools ───────────────────────────────────────────────────────────
 
-  server.tool("hooks_register", "Register a lifecycle hook", {
-    id: z.string(),
-    event: z.enum(["PreToolUse", "PostToolUse", "SessionStart", "SessionStop", "OperatorSpawn", "OperatorDismiss", "ModeChange", "PreApproval", "PostApproval", "MemoryWrite", "TaskStart", "TaskComplete"]),
-    type: z.enum(["command", "prompt"]),
-    matcher: z.string().optional(),
-    command: z.string().optional(),
-    prompt: z.string().optional(),
-    priority: z.number().optional(),
-  }, async ({ id, event, type, matcher, command, prompt, priority }) => {
-    hookRegistry.register({
-      id,
-      event: event as HookEvent,
-      type: type as HookType,
-      matcher,
-      command,
-      prompt,
-      priority,
-    });
-    return { content: [{ type: "text", text: `Hook registered: ${id} on ${event}` }] };
-  });
-
-  server.tool("hooks_unregister", "Remove a registered hook", {
-    id: z.string(),
-  }, async ({ id }) => {
-    const ok = hookRegistry.unregister(id);
-    return { content: [{ type: "text", text: ok ? `Unregistered: ${id}` : `Not found: ${id}` }] };
-  });
+  // hooks_register and hooks_unregister intentionally omitted — hooks with
+  // "command" type execute arbitrary shell commands, so registration is
+  // restricted to trusted sources (config file, ~/.claude-drive/hooks/).
 
   server.tool("hooks_list", "List registered hooks", {
     event: z.string().optional(),
@@ -632,19 +624,23 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (req.method === "POST") {
-      const id = sessionId ?? `session-${Date.now()}`;
+      const id = sessionId ?? `session-${crypto.randomUUID()}`;
       let entry = sessions.get(id);
       if (!entry) {
+        // Evict stale sessions before creating new ones
+        if (sessions.size >= MAX_SESSIONS) cleanupStaleSessions();
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
         const server = buildMcpServer(opts);
         await server.connect(transport);
-        entry = { transport, server };
+        entry = { transport, server, lastAccess: Date.now() };
         sessions.set(id, entry);
       }
+      entry.lastAccess = Date.now();
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "GET" && sessionId) {
       const entry = sessions.get(sessionId);
       if (!entry) { res.writeHead(404); res.end(); return; }
+      entry.lastAccess = Date.now();
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "DELETE" && sessionId) {
       sessions.delete(sessionId);
@@ -681,7 +677,12 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
 
   writePortFile(boundPort);
 
+  // Periodically clean up idle MCP sessions
+  const sessionCleanupTimer = setInterval(cleanupStaleSessions, SESSION_CLEANUP_INTERVAL_MS);
+  sessionCleanupTimer.unref(); // Don't keep process alive for cleanup
+
   const cleanup = () => {
+    clearInterval(sessionCleanupTimer);
     deletePortFile();
   };
   process.once("SIGINT", cleanup);

@@ -2,7 +2,7 @@
  * sessionManager.ts — High-level session create/resume.
  */
 import type { OperatorRegistry } from "./operatorRegistry.js";
-import type { DriveModeManager } from "./driveMode.js";
+import type { DriveModeManager, DriveSubMode } from "./driveMode.js";
 import { saveSession, loadSession, listSessions as listStoredSessions } from "./sessionStore.js";
 import type { SessionSnapshot } from "./sessionStore.js";
 
@@ -33,7 +33,7 @@ export function resumeSession(id: string, registry: OperatorRegistry, driveMode:
   if (!snapshot) return false;
 
   driveMode.setActive(snapshot.driveMode.active);
-  driveMode.setSubMode(snapshot.driveMode.subMode as never);
+  driveMode.setSubMode(snapshot.driveMode.subMode as DriveSubMode);
 
   for (const op of snapshot.operators) {
     if (op.status === "completed" || op.status === "merged") continue;

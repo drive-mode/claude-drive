@@ -63,6 +63,21 @@ export function minPreset(a: PermissionPreset, b: PermissionPreset): PermissionP
   return PRESET_ORDER.indexOf(a) <= PRESET_ORDER.indexOf(b) ? a : b;
 }
 
+const VALID_ROLES: ReadonlySet<string> = new Set(["implementer", "reviewer", "tester", "researcher", "planner"]);
+const VALID_PRESETS: ReadonlySet<string> = new Set(["readonly", "standard", "full"]);
+
+export function parseRole(value: string | undefined): OperatorRole | undefined {
+  if (!value) return undefined;
+  if (VALID_ROLES.has(value)) return value as OperatorRole;
+  return undefined;
+}
+
+export function parsePreset(value: string | undefined): PermissionPreset | undefined {
+  if (!value) return undefined;
+  if (VALID_PRESETS.has(value)) return value as PermissionPreset;
+  return undefined;
+}
+
 export interface OperatorStats {
   totalCostUsd: number;
   totalDurationMs: number;
