@@ -62,14 +62,15 @@ export function resetOperatorStats(operatorId: string): void {
 function recordAction(action: GateAction, pattern?: string, operatorId?: string): void {
   stats.totalChecks++;
   stats.actionCounts[action]++;
-  if (operatorId) {
-    let opStats = stats.operatorActionCounts.get(operatorId);
-    if (!opStats) {
-      opStats = { allow: 0, log: 0, warn: 0, block: 0 };
-      stats.operatorActionCounts.set(operatorId, opStats);
-    }
-    opStats[action]++;
+  // Track per-operator stats — use "anonymous" for empty/missing operatorId
+  // to prevent throttle bypass via empty string
+  const opKey = operatorId && operatorId.trim() ? operatorId : "anonymous";
+  let opStats = stats.operatorActionCounts.get(opKey);
+  if (!opStats) {
+    opStats = { allow: 0, log: 0, warn: 0, block: 0 };
+    stats.operatorActionCounts.set(opKey, opStats);
   }
+  opStats[action]++;
   if ((action === "block" || action === "warn") && pattern) {
     stats.recentBlocks.push({ pattern, timestamp: Date.now(), operatorId });
     if (stats.recentBlocks.length > MAX_RECENT_BLOCKS) stats.recentBlocks.shift();

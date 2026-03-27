@@ -12,6 +12,7 @@ import type { MemoryEntry } from "./memoryStore.js";
 import { exportAll as exportMemory, importBulk as importMemory } from "./memoryManager.js";
 import type { DriveOutputEvent } from "./agentOutput.js";
 import { getConfig } from "./config.js";
+import { atomicWriteJSON } from "./atomicWrite.js";
 
 const SESSIONS_DIR = path.join(os.homedir(), ".claude-drive", "sessions");
 
@@ -61,11 +62,7 @@ export function createCheckpoint(
 
   const dir = checkpointDir(sessionId);
   ensureDir(dir);
-  fs.writeFileSync(
-    path.join(dir, `${cp.id}.json`),
-    JSON.stringify(cp, null, 2),
-    "utf-8"
-  );
+  atomicWriteJSON(path.join(dir, `${cp.id}.json`), cp);
 
   // Enforce max checkpoints
   const maxCheckpoints = getConfig<number>("sessions.maxCheckpoints") ?? 20;
@@ -183,11 +180,7 @@ export function forkSession(
 
   const dir = checkpointDir(newSessionId);
   ensureDir(dir);
-  fs.writeFileSync(
-    path.join(dir, `${forkCp.id}.json`),
-    JSON.stringify(forkCp, null, 2),
-    "utf-8"
-  );
+  atomicWriteJSON(path.join(dir, `${forkCp.id}.json`), forkCp);
 
   return { newSessionId, checkpoint: forkCp };
 }
