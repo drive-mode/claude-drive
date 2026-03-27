@@ -13,6 +13,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { OperatorRegistry } from "./operatorRegistry.js";
 import type { DriveModeManager } from "./driveMode.js";
+import { getConfig } from "./config.js";
 import { logActivity, logFile, logDecision, agentOutput } from "./agentOutput.js";
 import { speak, stop as ttsStop } from "./tts.js";
 import { runOperator } from "./operatorManager.js";
@@ -197,11 +198,19 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     role: z.enum(["implementer", "reviewer", "tester", "researcher", "planner"]).optional(),
     preset: z.enum(["readonly", "standard", "full"]).optional(),
   }, async ({ task, operatorName, role, preset }) => {
+    // Enforce maxConcurrent limit
+    const maxConcurrent = getConfig<number>("operators.maxConcurrent") ?? 3;
+    const activeCount = registry.getActive().filter((o) => o.status === "active" || o.status === "background").length;
+    if (activeCount >= maxConcurrent) {
+      return { content: [{ type: "text", text: `Cannot dispatch: ${activeCount} operators active (max ${maxConcurrent}). Dismiss an operator first.` }], isError: true };
+    }
+
     let op = operatorName ? registry.findByNameOrId(operatorName) : registry.getForeground();
     if (!op) {
       op = registry.spawn(operatorName, task, { role, preset });
     }
-    void runOperator(op, task, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete });
+    runOperator(op, task, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete })
+      .catch((e) => console.error(`[drive_run_task] Error in operator ${op!.name}:`, e));
     return { content: [{ type: "text", text: `Task dispatched to ${op.name}: ${task}` }] };
   });
 
@@ -515,7 +524,8 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
           preset: skill.requiredPreset,
         });
       }
-      void runOperator(op, prompt, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete });
+      runOperator(op, prompt, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete })
+        .catch((e) => console.error(`[skill_run] Error in operator ${op!.name}:`, e));
       return { content: [{ type: "text", text: `Skill "${name}" dispatched to ${op.name}` }] };
     } catch (e) {
       return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
@@ -616,7 +626,7 @@ export async function startMcpServerStdio(opts: Omit<McpServerOptions, "port">):
 
 export async function startMcpServer(opts: McpServerOptions): Promise<{ port: number }> {
   const { port } = opts;
-  const portRange: number = (await import("./config.js")).getConfig<number>("mcp.portRange") ?? 5;
+  const portRange: number = getConfig<number>("mcp.portRange") ?? 5;
 
   const httpServer = http.createServer(async (req, res) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;

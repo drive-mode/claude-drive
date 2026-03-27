@@ -6,6 +6,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { atomicWriteJSON } from "./atomicWrite.js";
 
 const CONFIG_FILE = path.join(os.homedir(), ".claude-drive", "config.json");
 
@@ -138,8 +139,7 @@ export function saveConfig(key: string, value: unknown): void {
   loadFile();
   fileConfig[key] = value;
   try {
-    fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(fileConfig, null, 2), "utf-8");
+    atomicWriteJSON(CONFIG_FILE, fileConfig);
   } catch (e) {
     console.error("[config] Failed to save:", e);
   }

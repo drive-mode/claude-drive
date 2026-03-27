@@ -58,6 +58,15 @@ program
       printStatus(true, driveMode.subMode);
     }
 
+    // Validate SDK is available (fail fast instead of silent failure in runOperator)
+    try {
+      await import("@anthropic-ai/claude-agent-sdk");
+    } catch {
+      console.error("[claude-drive] FATAL: @anthropic-ai/claude-agent-sdk not installed.");
+      console.error("[claude-drive] Run: npm install @anthropic-ai/claude-agent-sdk");
+      process.exit(1);
+    }
+
     // Initialize hooks, skills, and auto-dream
     import("os").then(({ default: os }) => {
       import("path").then(({ default: pathMod }) => {

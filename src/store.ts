@@ -5,6 +5,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { atomicWriteJSON } from "./atomicWrite.js";
 
 const STORE_DIR = path.join(os.homedir(), ".claude-drive");
 const STORE_FILE = path.join(STORE_DIR, "state.json");
@@ -27,8 +28,7 @@ function ensureLoaded(): void {
 
 function flush(): void {
   try {
-    fs.mkdirSync(STORE_DIR, { recursive: true });
-    fs.writeFileSync(STORE_FILE, JSON.stringify(cache, null, 2), "utf-8");
+    atomicWriteJSON(STORE_FILE, cache);
   } catch (e) {
     console.error("[store] Failed to flush:", e);
   }
