@@ -92,6 +92,8 @@ export interface OperatorContext {
   syncState?: SyncState;
   sessionId?: string;
   stats: OperatorStats;
+  /** Controller to cancel in-flight tasks when operator is dismissed. */
+  abortController?: AbortController;
 }
 
 export interface SpawnOptions {
@@ -237,6 +239,8 @@ export class OperatorRegistry {
     const op = this.findByNameOrId(nameOrId);
     if (!op) return false;
     op.status = "completed";
+    // Cancel any in-flight task for this operator
+    op.abortController?.abort();
     this.events.emit("operatorCompleted", op.id, op.task || "completed");
     // Fire OperatorDismiss hook (non-blocking)
     void hookRegistry.execute("OperatorDismiss", {
@@ -246,6 +250,7 @@ export class OperatorRegistry {
     for (const child of this.operators.values()) {
       if (child.parentId === op.id && child.status !== "completed" && child.status !== "merged") {
         child.status = "completed";
+        child.abortController?.abort();
         this.events.emit("operatorCompleted", child.id, `Cascade dismiss from ${op.name}`);
         if (this.foregroundId === child.id) this.foregroundId = this.pickNextForeground(child.id);
       }
