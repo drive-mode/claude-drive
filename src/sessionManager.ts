@@ -2,6 +2,7 @@
  * sessionManager.ts — High-level session create/resume.
  */
 import type { OperatorRegistry } from "./operatorRegistry.js";
+import { toSerializable } from "./operatorRegistry.js";
 import type { DriveModeManager, DriveSubMode } from "./driveMode.js";
 import { saveSession, loadSession, listSessions as listStoredSessions } from "./sessionStore.js";
 import type { SessionSnapshot } from "./sessionStore.js";
@@ -21,7 +22,7 @@ export function createSession(registry: OperatorRegistry, driveMode: DriveModeMa
     createdAt: Date.now(),
     name,
     driveMode: { active: driveMode.active, subMode: driveMode.subMode },
-    operators: registry.list(),
+    operators: registry.list().map(toSerializable),
     activityLog: [...activityLog],
   };
   saveSession(snapshot);

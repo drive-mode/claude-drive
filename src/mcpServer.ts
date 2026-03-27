@@ -83,7 +83,24 @@ function cleanupStaleSessions(): void {
   for (const [id, entry] of sessions) {
     if (now - entry.lastAccess > SESSION_TTL_MS) {
       sessions.delete(id);
+      void entry.transport.close().catch(() => {});
     }
+  }
+}
+
+function evictOldestSession(): void {
+  let oldestId: string | undefined;
+  let oldestTime = Infinity;
+  for (const [id, entry] of sessions) {
+    if (entry.lastAccess < oldestTime) {
+      oldestTime = entry.lastAccess;
+      oldestId = id;
+    }
+  }
+  if (oldestId) {
+    const entry = sessions.get(oldestId)!;
+    sessions.delete(oldestId);
+    void entry.transport.close().catch(() => {});
   }
 }
 
@@ -531,7 +548,6 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     description: z.string().optional(),
   }, async ({ name, description }) => {
     const sessionId = opts.sessionId ?? `session-${Date.now()}`;
-    const { trackEvent: _te, ...sessionMod } = await import("./sessionManager.js");
     const cp = createCheckpoint(sessionId, registry, driveMode, [], name, description);
     return { content: [{ type: "text", text: `Checkpoint created: ${cp.id}${name ? ` (${name})` : ""}` }] };
   });
@@ -627,8 +643,11 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
       const id = sessionId ?? `session-${crypto.randomUUID()}`;
       let entry = sessions.get(id);
       if (!entry) {
-        // Evict stale sessions before creating new ones
-        if (sessions.size >= MAX_SESSIONS) cleanupStaleSessions();
+        // Evict stale sessions before creating new ones; LRU fallback if still full
+        if (sessions.size >= MAX_SESSIONS) {
+          cleanupStaleSessions();
+          if (sessions.size >= MAX_SESSIONS) evictOldestSession();
+        }
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
         const server = buildMcpServer(opts);
         await server.connect(transport);
@@ -643,7 +662,9 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
       entry.lastAccess = Date.now();
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "DELETE" && sessionId) {
+      const deleted = sessions.get(sessionId);
       sessions.delete(sessionId);
+      if (deleted) void deleted.transport.close().catch(() => {});
       res.writeHead(200); res.end();
     } else {
       res.writeHead(405); res.end();

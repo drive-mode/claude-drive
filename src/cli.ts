@@ -12,8 +12,9 @@
  *   claude-drive tts "text"                # Speak text via TTS
  *   claude-drive config set <key> <value>  # Set a config value
  */
+import os from "os";
 import { Command } from "commander";
-import { createDriveModeManager, type DriveSubMode } from "./driveMode.js";
+import { createDriveModeManager, isSubMode, type DriveSubMode } from "./driveMode.js";
 import { OperatorRegistry, parseRole, parsePreset } from "./operatorRegistry.js";
 import { runOperator } from "./operatorManager.js";
 import { speak } from "./tts.js";
@@ -68,8 +69,7 @@ program
     }
 
     // Initialize hooks, skills, and auto-dream
-    const osModule = await import("os");
-    const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", osModule.default.homedir());
+    const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
     hookRegistry.loadFromDirectory(hooksDir);
     hookRegistry.loadFromConfig();
     loadDefaultSkills();
@@ -261,12 +261,11 @@ modeCmd
   .command("set <mode>")
   .description("Set drive sub-mode (plan|agent|ask|debug|off)")
   .action((mode: string) => {
-    const validModes = ["plan", "agent", "ask", "debug", "off"];
-    if (!validModes.includes(mode)) {
-      console.error(`[claude-drive] Invalid mode: ${mode}. Valid: ${validModes.join(", ")}`);
+    if (!isSubMode(mode)) {
+      console.error(`[claude-drive] Invalid mode: ${mode}. Valid: plan, agent, ask, debug, off`);
       return;
     }
-    driveMode.setSubMode(mode as DriveSubMode);
+    driveMode.setSubMode(mode);
     console.log(`[claude-drive] Mode: ${mode}`);
     printStatus(driveMode.active, mode, registry.getForeground()?.name);
   });
