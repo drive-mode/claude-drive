@@ -126,7 +126,14 @@ export function getConfig<T>(key: string): T {
 
   // Check env var: "tts.backend" → "CLAUDE_DRIVE_TTS_BACKEND"
   const envKey = "CLAUDE_DRIVE_" + key.toUpperCase().replace(/\./g, "_");
-  if (process.env[envKey] !== undefined) return process.env[envKey] as unknown as T;
+  if (process.env[envKey] !== undefined) {
+    const raw = process.env[envKey]!;
+    // Coerce env string to match the type of the default value
+    const defaultVal = DEFAULTS[key];
+    if (typeof defaultVal === "number") return Number(raw) as unknown as T;
+    if (typeof defaultVal === "boolean") return (raw === "true" || raw === "1") as unknown as T;
+    return raw as unknown as T;
+  }
 
   if (key in fileConfig) return fileConfig[key] as T;
   if (key in DEFAULTS) return DEFAULTS[key] as T;

@@ -6,8 +6,9 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import type { OperatorRegistry, OperatorContext } from "./operatorRegistry.js";
-import type { DriveModeManager } from "./driveMode.js";
+import type { OperatorRegistry, SerializableOperator } from "./operatorRegistry.js";
+import { toSerializable } from "./operatorRegistry.js";
+import type { DriveModeManager, DriveSubMode } from "./driveMode.js";
 import type { MemoryEntry } from "./memoryStore.js";
 import { exportAll as exportMemory, importBulk as importMemory } from "./memoryManager.js";
 import type { DriveOutputEvent } from "./agentOutput.js";
@@ -22,7 +23,7 @@ export interface Checkpoint {
   name?: string;
   description?: string;
   createdAt: number;
-  operators: OperatorContext[];
+  operators: SerializableOperator[];
   driveMode: { active: boolean; subMode: string };
   memory: MemoryEntry[];
   activityLog: DriveOutputEvent[];
@@ -53,7 +54,7 @@ export function createCheckpoint(
     name,
     description,
     createdAt: Date.now(),
-    operators: registry.list().map((o) => ({ ...o })),
+    operators: registry.list().map(toSerializable),
     driveMode: { active: driveMode.active, subMode: driveMode.subMode },
     memory: exportMemory(),
     activityLog: [...activityLog],
@@ -82,7 +83,7 @@ export function restoreCheckpoint(
 
   // Restore drive mode
   driveMode.setActive(cp.driveMode.active);
-  driveMode.setSubMode(cp.driveMode.subMode as never);
+  driveMode.setSubMode(cp.driveMode.subMode as DriveSubMode);
 
   // Restore operators: dismiss all current, then spawn from snapshot
   for (const op of registry.list()) {

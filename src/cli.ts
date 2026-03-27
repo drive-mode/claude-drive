@@ -12,9 +12,10 @@
  *   claude-drive tts "text"                # Speak text via TTS
  *   claude-drive config set <key> <value>  # Set a config value
  */
+import os from "os";
 import { Command } from "commander";
-import { createDriveModeManager } from "./driveMode.js";
-import { OperatorRegistry } from "./operatorRegistry.js";
+import { createDriveModeManager, isSubMode, type DriveSubMode } from "./driveMode.js";
+import { OperatorRegistry, parseRole, parsePreset } from "./operatorRegistry.js";
 import { runOperator } from "./operatorManager.js";
 import { speak } from "./tts.js";
 import { printStatus, logActivity, agentOutput } from "./agentOutput.js";
@@ -68,18 +69,14 @@ program
     }
 
     // Initialize hooks, skills, and auto-dream
-    import("os").then(({ default: os }) => {
-      import("path").then(({ default: pathMod }) => {
-        const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
-        hookRegistry.loadFromDirectory(hooksDir);
-        hookRegistry.loadFromConfig();
-      });
-    });
+    const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
+    hookRegistry.loadFromDirectory(hooksDir);
+    hookRegistry.loadFromConfig();
     loadDefaultSkills();
     const dreamDaemon = new AutoDreamDaemon();
     dreamDaemon.start();
 
-    // Fire SessionStart hook
+    // Fire SessionStart hook (hooks are now guaranteed to be loaded)
     void hookRegistry.execute("SessionStart", { event: "SessionStart", timestamp: Date.now() });
 
     // Lazy-import MCP server to keep startup fast when not needed
@@ -181,11 +178,11 @@ program
   .option("--preset <preset>", "Permission preset (readonly|standard|full)")
   .action(async (task: string, opts: { name?: string; role?: string; preset?: string }) => {
     const decision = route({ prompt: task, driveSubMode: driveMode.subMode });
-    driveMode.setSubMode(decision.mode as never);
+    driveMode.setSubMode(decision.mode as DriveSubMode);
     logActivity("router", decision.reason);
     const op = registry.spawn(opts.name, task, {
-      role: opts.role as never,
-      preset: opts.preset as never,
+      role: parseRole(opts.role),
+      preset: parsePreset(opts.preset),
     });
     await runOperator(op, task, {
       allOperators: registry.getActive(),
@@ -219,8 +216,8 @@ operatorCmd
   .option("--preset <preset>", "Permission preset")
   .action((name: string | undefined, opts: { task?: string; role?: string; preset?: string }) => {
     const op = registry.spawn(name, opts.task ?? "", {
-      role: opts.role as never,
-      preset: opts.preset as never,
+      role: parseRole(opts.role),
+      preset: parsePreset(opts.preset),
     });
     console.log(`[claude-drive] Spawned operator: ${op.name} (${op.permissionPreset})`);
     printStatus(driveMode.active, driveMode.subMode, op.name, registry.getActive().length - 1);
@@ -264,7 +261,11 @@ modeCmd
   .command("set <mode>")
   .description("Set drive sub-mode (plan|agent|ask|debug|off)")
   .action((mode: string) => {
-    driveMode.setSubMode(mode as never);
+    if (!isSubMode(mode)) {
+      console.error(`[claude-drive] Invalid mode: ${mode}. Valid: plan, agent, ask, debug, off`);
+      return;
+    }
+    driveMode.setSubMode(mode);
     console.log(`[claude-drive] Mode: ${mode}`);
     printStatus(driveMode.active, mode, registry.getForeground()?.name);
   });

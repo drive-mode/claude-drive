@@ -4,7 +4,7 @@ AI agent context for working in this repository.
 
 ## What This Project Is
 
-**claude-drive** is a standalone Node.js/TypeScript CLI that brings cursor-drive's multi-operator pair programming to the Claude Code CLI. It runs an MCP server on `:7891` that Claude Code reads tools from, and uses `@anthropic-ai/claude-agent-sdk` to execute operators as subagents.
+**claude-drive** is a standalone Node.js/TypeScript CLI that brings cursor-drive's multi-operator pair programming to the Claude Code CLI. It runs an MCP server on `:7891` that Claude Code reads tools from, and uses `@anthropic-ai/claude-agent-sdk@0.2.77` to execute operators as subagents.
 
 Ported from `../cursor-drive` (VS Code extension). ~60% of source adapted with VS Code APIs replaced by Node.js equivalents.
 
@@ -14,7 +14,7 @@ Ported from `../cursor-drive` (VS Code extension). ~60% of source adapted with V
 npm install          # Install dependencies
 npm run compile      # TypeScript → out/
 npm run watch        # Watch mode
-npm test             # Jest unit tests (--experimental-vm-modules)
+npm test             # Jest unit tests (176 tests, --experimental-vm-modules)
 npm start            # node out/cli.js start
 ```
 
@@ -27,30 +27,46 @@ node out/cli.js run "add a readme"
 ## Architecture
 
 ```
-cli.ts → driveMode + operatorRegistry
-       → operatorManager (Agent SDK query())
-       → mcpServer (localhost:7891) ← registered in ~/.claude/settings.json
+cli.ts (fail-fast SDK validation)
+       → driveMode + operatorRegistry (AbortController on dismiss)
+       → operatorManager (Agent SDK query(), AbortController per operator)
+       → mcpServer (localhost:7891, maxConcurrent enforcement)
        → agentOutput (Ink TUI)
        → tts (edgeTts → piper → say)
        → worktreeManager (git worktree per operator)
+       → memoryStore + autoDream (typed memory, confidence decay, consolidation)
+       → checkpoint (session snapshots + fork)
+       → hooks (pre/post lifecycle events)
+       → skillLoader (dynamic skill registration)
+       → approvalGates (safety gates, per-operator throttling)
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/cli.ts` | CLI entry point (commander) |
-| `src/mcpServer.ts` | MCP server — Drive tools exposed to Claude Code |
-| `src/operatorManager.ts` | Wraps Agent SDK `query()` per operator |
-| `src/operatorRegistry.ts` | Operator lifecycle (spawn/switch/dismiss/merge) |
+| `src/cli.ts` | CLI entry point (commander), fail-fast SDK validation |
+| `src/mcpServer.ts` | MCP server — Drive tools exposed to Claude Code, maxConcurrent enforcement |
+| `src/operatorManager.ts` | Wraps Agent SDK `query()` per operator with AbortController |
+| `src/operatorRegistry.ts` | Operator lifecycle (spawn/switch/dismiss/merge), abort on dismiss |
 | `src/driveMode.ts` | State machine (active + subMode) |
 | `src/router.ts` | Routes input to correct operator |
 | `src/agentOutput.ts` | Terminal output renderer (Ink/React) |
 | `src/tts.ts` | TTS dispatch (edgeTts/piper/say backends) |
+| `src/atomicWrite.ts` | Shared atomic write utility (tmp + rename pattern) |
+| `src/memoryStore.ts` | Typed memory entries with confidence decay |
+| `src/memoryManager.ts` | Memory retrieval and contextual search |
+| `src/autoDream.ts` | Automatic memory consolidation during idle |
+| `src/checkpoint.ts` | Session state snapshots and fork support |
+| `src/hooks.ts` | Pre/post lifecycle hooks for operator events |
+| `src/skillLoader.ts` | Dynamic skill loading and registration |
+| `src/approvalGates.ts` | Safety gates with per-operator throttling |
+| `src/approvalQueue.ts` | Approval queue for dangerous operations |
 | `src/sessionManager.ts` | Session lifecycle |
+| `src/sessionStore.ts` | Session persistence with atomic writes |
 | `src/worktreeManager.ts` | Git worktree isolation per operator |
-| `src/store.ts` | JSON KV store (state persistence) |
-| `src/config.ts` | Config loader (`~/.claude-drive/config.json`) |
+| `src/store.ts` | JSON KV store (state persistence, atomic writes) |
+| `src/config.ts` | Config loader (`~/.claude-drive/config.json`), atomic writes |
 | `src/syncTypes.ts` | Shared types kept in sync with cursor-drive |
 
 ## Coding Conventions
@@ -61,6 +77,8 @@ cli.ts → driveMode + operatorRegistry
 - Named exports preferred over default exports
 - `async/await` over raw Promise chains
 - Tests in `tests/` using Jest with `ts-jest` ESM preset
+- All persistence uses `atomicWriteJSON()` — never raw `fs.writeFileSync` for JSON state
+- SDK versions are pinned to exact versions (not `latest`)
 
 ## Config
 
@@ -70,6 +88,7 @@ Config file: `~/.claude-drive/config.json`
 node out/cli.js config set tts.backend edgeTts
 node out/cli.js config set tts.enabled true
 node out/cli.js config set mcp.port 7891
+node out/cli.js config set operators.maxConcurrent 3
 ```
 
 ## Sync with cursor-drive
