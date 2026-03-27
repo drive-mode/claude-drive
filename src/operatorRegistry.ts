@@ -63,19 +63,14 @@ export function minPreset(a: PermissionPreset, b: PermissionPreset): PermissionP
   return PRESET_ORDER.indexOf(a) <= PRESET_ORDER.indexOf(b) ? a : b;
 }
 
-const VALID_ROLES: ReadonlySet<string> = new Set(["implementer", "reviewer", "tester", "researcher", "planner"]);
-const VALID_PRESETS: ReadonlySet<string> = new Set(["readonly", "standard", "full"]);
-
 export function parseRole(value: string | undefined): OperatorRole | undefined {
   if (!value) return undefined;
-  if (VALID_ROLES.has(value)) return value as OperatorRole;
-  return undefined;
+  return value in ROLE_TEMPLATES ? (value as OperatorRole) : undefined;
 }
 
 export function parsePreset(value: string | undefined): PermissionPreset | undefined {
   if (!value) return undefined;
-  if (VALID_PRESETS.has(value)) return value as PermissionPreset;
-  return undefined;
+  return (PRESET_ORDER as readonly string[]).includes(value) ? (value as PermissionPreset) : undefined;
 }
 
 export interface OperatorStats {
@@ -109,6 +104,14 @@ export interface OperatorContext {
   stats: OperatorStats;
   /** Controller to cancel in-flight tasks when operator is dismissed. */
   abortController?: AbortController;
+}
+
+/** OperatorContext without non-serializable fields, safe for JSON persistence. */
+export type SerializableOperator = Omit<OperatorContext, "abortController">;
+
+export function toSerializable(op: OperatorContext): SerializableOperator {
+  const { abortController, ...rest } = op;
+  return rest;
 }
 
 export interface SpawnOptions {

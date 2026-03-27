@@ -6,7 +6,8 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import type { OperatorRegistry, OperatorContext } from "./operatorRegistry.js";
+import type { OperatorRegistry, SerializableOperator } from "./operatorRegistry.js";
+import { toSerializable } from "./operatorRegistry.js";
 import type { DriveModeManager, DriveSubMode } from "./driveMode.js";
 import type { MemoryEntry } from "./memoryStore.js";
 import { exportAll as exportMemory, importBulk as importMemory } from "./memoryManager.js";
@@ -16,19 +17,13 @@ import { atomicWriteJSON } from "./atomicWrite.js";
 
 const SESSIONS_DIR = path.join(os.homedir(), ".claude-drive", "sessions");
 
-/** Strip non-serializable fields (e.g. AbortController) from operator snapshots. */
-function serializableOperator(op: OperatorContext): Omit<OperatorContext, "abortController"> {
-  const { abortController, ...rest } = op;
-  return rest;
-}
-
 export interface Checkpoint {
   id: string;
   sessionId: string;
   name?: string;
   description?: string;
   createdAt: number;
-  operators: OperatorContext[];
+  operators: SerializableOperator[];
   driveMode: { active: boolean; subMode: string };
   memory: MemoryEntry[];
   activityLog: DriveOutputEvent[];
@@ -59,7 +54,7 @@ export function createCheckpoint(
     name,
     description,
     createdAt: Date.now(),
-    operators: registry.list().map(serializableOperator),
+    operators: registry.list().map(toSerializable),
     driveMode: { active: driveMode.active, subMode: driveMode.subMode },
     memory: exportMemory(),
     activityLog: [...activityLog],
