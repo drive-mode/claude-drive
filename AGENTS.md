@@ -102,3 +102,13 @@ When `../cursor-drive` changes key business logic, sync these files manually:
 
 - [@hhalperin](https://github.com/hhalperin) — lead
 - [@ai-secretagent](https://github.com/ai-secretagent) — co-maintainer
+
+## Cursor Cloud specific instructions
+
+- **Node.js**: v22 is pre-installed; no version manager setup needed.
+- **Standard commands**: See the `## Commands` section above — `npm install`, `npm run compile`, `npm test`, `npm start` are all you need.
+- **MCP server**: `npm start` (or `node out/cli.js start`) launches the MCP server on port 7891. It requires `npm run compile` first. The server uses SSE; plain JSON-only curl requests will get a "Not Acceptable" error — pass `Accept: application/json, text/event-stream` header when testing with curl.
+- **Tests run offline**: All 176 Jest tests are fully mocked — no API keys or external services needed.
+- **E2E / `run` command**: `node out/cli.js run "<task>"` requires a valid `ANTHROPIC_API_KEY` env var (it calls the Anthropic API via the Agent SDK). Unit tests do not require this key.
+- **Port file**: The server writes `~/.claude-drive/port` on start and deletes it on exit. If a previous server crashed, this stale file may cause `node out/cli.js port` to report an incorrect URL — just delete it and restart.
+- **No Docker, no databases**: This is a pure Node.js project with no external service dependencies for dev/test.
