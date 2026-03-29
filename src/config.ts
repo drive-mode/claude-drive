@@ -98,6 +98,24 @@ const DEFAULTS: Record<string, unknown> = {
   "dream.pruneThreshold": 0.2,
   "dream.mergeThreshold": 0.7,
   "dream.maxAgeMs": 604800000,       // 7 days
+
+  // Reflection gates (AutoResearch pattern)
+  "reflection.enabled": true,
+  "reflection.rulesFile": "~/.claude-drive/reflection-rules.json",
+  "reflection.reflectorModel": "haiku",
+
+  // Evaluation harness
+  "evaluation.scenariosDir": "~/.claude-drive/eval-scenarios",
+  "evaluation.resultsDir": "~/.claude-drive/eval-results",
+  "evaluation.defaultTimeoutMs": 60000,
+  "evaluation.passThreshold": 0.7,
+
+  // Prompt optimizer (AutoResearch loop)
+  "optimizer.enabled": true,
+  "optimizer.maxIterations": 20,
+  "optimizer.improvementThreshold": 0.02,
+  "optimizer.checkpointEvery": 5,
+  "optimizer.mutationModel": "claude-haiku-4-5-20251001",
 };
 
 let fileConfig: Record<string, unknown> = {};
