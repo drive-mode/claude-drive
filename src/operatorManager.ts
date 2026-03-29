@@ -9,6 +9,8 @@ import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
 import { buildMemoryContext } from "./memoryManager.js";
 import { hookRegistry } from "./hooks.js";
+import { buildReflectionHooks, buildReflectorAgent, buildBestPracticesAgent } from "./reflectionGate.js";
+import type { ReflectionHooks } from "./reflectionGate.js";
 
 // ── Tool permission mapping ─────────────────────────────────────────────────
 
@@ -121,9 +123,53 @@ export async function runOperator(
   const maxTurns = opts.maxTurns ?? 50;
   const maxBudgetUsd = getConfig<number>("operator.maxBudgetUsd");
 
-  const subagentDefs = opts.allOperators
+  // Build operator subagent definitions (peer operators)
+  const peerDefs = opts.allOperators
     ? buildSubagentDefs(opts.allOperators.filter((o) => o.id !== op.id))
     : {};
+
+  // Build reflection hooks and subagents (AutoResearch pattern)
+  const reflectionEnabled = getConfig<boolean>("reflection.enabled") ?? true;
+  const reflectionHooks: ReflectionHooks = reflectionEnabled
+    ? buildReflectionHooks(op.role)
+    : {};
+  const reflectionAgents = reflectionEnabled
+    ? { reflector: buildReflectorAgent(), "best-practices": buildBestPracticesAgent() }
+    : {};
+
+  const subagentDefs = { ...peerDefs, ...reflectionAgents };
+
+  // Merge reflection hooks with built-in PostToolUse hooks
+  const builtinPostToolUse = [
+    {
+      matcher: "Edit|Write",
+      hooks: [
+        async (input: unknown) => {
+          const filePath = (input as { tool_input?: { file_path?: string } }).tool_input?.file_path;
+          if (filePath) logFile(op.name, filePath, "edited");
+          return {};
+        },
+      ],
+    },
+    {
+      matcher: "Bash",
+      hooks: [
+        async (input: unknown) => {
+          const cmd = (input as { tool_input?: { command?: string } }).tool_input?.command;
+          if (cmd) logActivity(op.name, `$ ${cmd.slice(0, 120)}`);
+          return {};
+        },
+      ],
+    },
+  ];
+
+  const mergedHooks = {
+    ...reflectionHooks,
+    PostToolUse: [
+      ...(reflectionHooks.PostToolUse ?? []),
+      ...builtinPostToolUse,
+    ],
+  };
 
   // Fire TaskStart hook
   const hookCtx = { event: "TaskStart" as const, operatorId: op.id, operatorName: op.name, timestamp: Date.now() };
@@ -150,30 +196,7 @@ export async function runOperator(
       systemPrompt: buildOperatorSystemPrompt(op),
       maxTurns,
       ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
-      hooks: {
-        PostToolUse: [
-          {
-            matcher: "Edit|Write",
-            hooks: [
-              async (input: unknown) => {
-                const filePath = (input as { tool_input?: { file_path?: string } }).tool_input?.file_path;
-                if (filePath) logFile(op.name, filePath, "edited");
-                return {};
-              },
-            ],
-          },
-          {
-            matcher: "Bash",
-            hooks: [
-              async (input: unknown) => {
-                const cmd = (input as { tool_input?: { command?: string } }).tool_input?.command;
-                if (cmd) logActivity(op.name, `$ ${cmd.slice(0, 120)}`);
-                return {};
-              },
-            ],
-          },
-        ],
-      },
+      hooks: mergedHooks,
     },
   })) {
     // Check if task was cancelled (e.g., operator dismissed)

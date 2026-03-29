@@ -33,6 +33,20 @@ import {
 } from "./checkpoint.js";
 import { trackEvent } from "./sessionManager.js";
 import { AutoDreamDaemon } from "./autoDream.js";
+import {
+  getReflectionRules, getDefaultRules, addReflectionRule,
+  removeReflectionRule, toggleReflectionRule,
+} from "./reflectionGate.js";
+import type { ReflectionHookEvent } from "./reflectionGate.js";
+import {
+  loadScenarios, loadScenariosByTag, buildEvalResult, buildSuiteResult,
+  compareResults, saveResult, loadResults,
+} from "./evaluationHarness.js";
+import {
+  startOptimization, stopOptimization, getOptimizationStatus,
+  listOptimizationRuns, getOptimizationSummary, ALL_MUTATION_OPERATORS,
+} from "./promptOptimizer.js";
+import type { MutationOperator } from "./promptOptimizer.js";
 
 export function getPortFilePath(): string {
   return path.join(os.homedir(), ".claude-drive", "port");
@@ -620,6 +634,169 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     const stats = memoryStore.stats();
     lines.push(`Memory: ${stats.total} entries`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  // ── Reflection gate tools ───────────────────────────────────────────────
+
+  server.tool("reflection_list", "List active self-reflection rules", {}, async () => {
+    const rules = getReflectionRules();
+    const defaults = getDefaultRules();
+    const lines = rules.map((r) => {
+      const isDefault = defaults.some((d) => d.id === r.id);
+      return `[${r.hookEvent}] ${r.id}${isDefault ? " (default)" : ""}: ${r.question.slice(0, 80)}${r.roles ? ` (roles: ${r.roles.join(",")})` : ""}`;
+    });
+    return { content: [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "No active reflection rules." }] };
+  });
+
+  server.tool("reflection_add", "Add a custom self-reflection rule", {
+    question: z.string().describe("The reflection question to inject"),
+    hookEvent: z.enum(["UserPromptSubmit", "PostToolUse", "Stop", "PreToolUse"]).describe("When to fire"),
+    roles: z.array(z.string()).optional().describe("Operator roles this applies to"),
+    toolMatcher: z.string().optional().describe("Regex for tool name (PreToolUse/PostToolUse)"),
+    tags: z.array(z.string()).optional().describe("Tags for filtering"),
+    priority: z.number().optional().describe("Lower = fires first"),
+  }, async (args) => {
+    const rule = addReflectionRule({
+      question: args.question,
+      hookEvent: args.hookEvent as ReflectionHookEvent,
+      roles: args.roles as import("./operatorRegistry.js").OperatorRole[] | undefined,
+      toolMatcher: args.toolMatcher,
+      tags: args.tags,
+      enabled: true,
+      priority: args.priority ?? 100,
+    });
+    return { content: [{ type: "text", text: `Added reflection rule: ${rule.id}` }] };
+  });
+
+  server.tool("reflection_remove", "Remove a custom reflection rule", {
+    id: z.string().describe("Rule ID to remove"),
+  }, async (args) => {
+    const removed = removeReflectionRule(args.id);
+    return { content: [{ type: "text", text: removed ? `Removed rule: ${args.id}` : `Rule not found: ${args.id}` }] };
+  });
+
+  server.tool("reflection_toggle", "Enable or disable a reflection rule", {
+    id: z.string().describe("Rule ID"),
+    enabled: z.boolean().describe("Enable or disable"),
+  }, async (args) => {
+    toggleReflectionRule(args.id, args.enabled);
+    return { content: [{ type: "text", text: `Rule ${args.id} ${args.enabled ? "enabled" : "disabled"}` }] };
+  });
+
+  // ── Evaluation harness tools ──────────────────────────────────────────
+
+  server.tool("evaluation_list", "List available eval scenarios and past results", {
+    tag: z.string().optional().describe("Filter scenarios by tag"),
+  }, async (args) => {
+    const scenarios = args.tag ? loadScenariosByTag(args.tag) : loadScenarios();
+    const results = loadResults();
+    const lines = [
+      `Scenarios: ${scenarios.length}`,
+      ...scenarios.map((s) => `  [${s.id}] ${s.name} (${s.expectedBehaviors.length} expected, ${s.forbiddenBehaviors.length} forbidden)`),
+      `\nPast results: ${results.length}`,
+      ...results.slice(0, 5).map((r) => `  [${r.suiteId}] ${new Date(r.timestamp).toLocaleString()} — pass: ${(r.passRate * 100).toFixed(1)}%, score: ${(r.averageScore * 100).toFixed(1)}%`),
+    ];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("evaluation_run", "Run evaluation suite against a prompt", {
+    prompt: z.string().describe("The prompt to evaluate"),
+    tag: z.string().optional().describe("Run only scenarios with this tag"),
+    suiteId: z.string().optional().describe("Suite ID for the result"),
+  }, async (args) => {
+    const scenarios = args.tag ? loadScenariosByTag(args.tag) : loadScenarios();
+    if (scenarios.length === 0) {
+      return { content: [{ type: "text", text: "No scenarios found. Add .json files to ~/.claude-drive/eval-scenarios/" }] };
+    }
+    const results = scenarios.map((s) => buildEvalResult(s, args.prompt, {
+      durationMs: 0, costUsd: 0, reflectionFired: [],
+    }));
+    const suite = buildSuiteResult(args.suiteId ?? `eval-${Date.now()}`, results, args.prompt);
+    saveResult(suite);
+    const lines = [
+      `Suite: ${suite.suiteId}`,
+      `Pass rate: ${(suite.passRate * 100).toFixed(1)}%`,
+      `Average score: ${(suite.averageScore * 100).toFixed(1)}%`,
+      `Scenarios: ${suite.scenarioCount}`,
+      ...results.map((r) => `  [${r.scenarioId}] ${r.passed ? "PASS" : "FAIL"} (${(r.score * 100).toFixed(1)}%)`),
+    ];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("evaluation_compare", "Compare two eval results", {
+    baselineSuiteId: z.string().describe("Baseline suite ID"),
+    currentSuiteId: z.string().describe("Current suite ID"),
+  }, async (args) => {
+    const allResults = loadResults();
+    const baseline = allResults.find((r) => r.suiteId === args.baselineSuiteId);
+    const current = allResults.find((r) => r.suiteId === args.currentSuiteId);
+    if (!baseline || !current) {
+      return { content: [{ type: "text", text: "One or both suite results not found." }] };
+    }
+    const comparison = compareResults(baseline, current);
+    return { content: [{ type: "text", text: comparison.details }] };
+  });
+
+  // ── Prompt optimizer tools ────────────────────────────────────────────
+
+  server.tool("optimizer_start", "Start autonomous prompt optimization loop", {
+    baselinePrompt: z.string().describe("Starting prompt to optimize"),
+    maxIterations: z.number().optional().describe("Max iterations (default 20)"),
+    tag: z.string().optional().describe("Eval scenario tag to use"),
+    improvementThreshold: z.number().optional().describe("Min score delta to keep (default 0.02)"),
+  }, async (args) => {
+    const scenarios = args.tag ? loadScenariosByTag(args.tag) : loadScenarios();
+    if (scenarios.length === 0) {
+      return { content: [{ type: "text", text: "No eval scenarios found. Add .json files to ~/.claude-drive/eval-scenarios/" }] };
+    }
+    const run = await startOptimization({
+      maxIterations: args.maxIterations ?? getConfig<number>("optimizer.maxIterations") ?? 20,
+      mutationOperators: ALL_MUTATION_OPERATORS,
+      baselinePrompt: args.baselinePrompt,
+      evalScenarios: scenarios,
+      improvementThreshold: args.improvementThreshold ?? getConfig<number>("optimizer.improvementThreshold") ?? 0.02,
+      checkpointEvery: getConfig<number>("optimizer.checkpointEvery") ?? 5,
+      optimizeReflectionRules: false,
+    });
+    return { content: [{ type: "text", text: `Optimization started: ${run.id}\nBaseline score: ${(run.baselineScore * 100).toFixed(1)}%` }] };
+  });
+
+  server.tool("optimizer_status", "Check optimization progress", {
+    runId: z.string().describe("Optimization run ID"),
+  }, async (args) => {
+    const run = getOptimizationStatus(args.runId);
+    if (!run) {
+      return { content: [{ type: "text", text: `Optimization run not found: ${args.runId}` }] };
+    }
+    return { content: [{ type: "text", text: getOptimizationSummary(run) }] };
+  });
+
+  server.tool("optimizer_stop", "Stop a running optimization", {
+    runId: z.string().describe("Optimization run ID to stop"),
+  }, async (args) => {
+    const stopped = stopOptimization(args.runId);
+    return { content: [{ type: "text", text: stopped ? `Stopped: ${args.runId}` : `Not found or already stopped: ${args.runId}` }] };
+  });
+
+  server.tool("optimizer_list", "List all optimization runs", {}, async () => {
+    const runs = listOptimizationRuns();
+    if (runs.length === 0) {
+      return { content: [{ type: "text", text: "No optimization runs." }] };
+    }
+    const lines = runs.map((r) =>
+      `[${r.id}] ${r.status} — iter ${r.currentIteration}/${r.config.maxIterations}, best: ${(r.bestScore * 100).toFixed(1)}%`
+    );
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("optimizer_apply", "Get the best prompt from a completed optimization", {
+    runId: z.string().describe("Optimization run ID"),
+  }, async (args) => {
+    const run = getOptimizationStatus(args.runId);
+    if (!run) {
+      return { content: [{ type: "text", text: `Optimization run not found: ${args.runId}` }] };
+    }
+    return { content: [{ type: "text", text: `Best prompt (score: ${(run.bestScore * 100).toFixed(1)}%):\n\n${run.bestPrompt}` }] };
   });
 
   return server;
