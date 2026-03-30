@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "bash -c 'PORT_FILE=\"$HOME/.claude-drive/port\"; if [ ! -f \"$PORT_FILE\" ]; then echo \"[claude-drive] Daemon is not running. Start it with: node out/cli.js start\"; exit 0; fi; PORT=$(cat \"$PORT_FILE\"); curl -sf \"http://localhost:$PORT/health\" > /dev/null 2>&1 || echo \"[claude-drive] Daemon port file exists but health check failed. Restart with: node out/cli.js start\"'"
+      }
+    ]
+  }
+}

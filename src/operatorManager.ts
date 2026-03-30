@@ -103,68 +103,100 @@ export async function runOperator(
     ? buildSubagentDefs(opts.allOperators.filter((o) => o.id !== op.id))
     : {};
 
+  const timeoutMs = getConfig<number>("operators.timeoutMs") ?? 300_000;
+  const maxRetries = 3;
+  const baseDelay = 1000;
+
   speak(`${op.name} starting: ${task}`);
   logActivity(op.name, `Starting task: ${task}`);
 
-  for await (const msg of queryFn({
-    prompt: task,
-    options: {
-      cwd,
-      allowedTools: toolsForPreset(op.permissionPreset),
-      agents: subagentDefs,
-      mcpServers: {
-        "claude-drive": { type: "http" as const, url: mcpUrl },
-      },
-      systemPrompt: buildOperatorSystemPrompt(op),
-      maxTurns,
-      ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
-      hooks: {
-        PostToolUse: [
-          {
-            matcher: "Edit|Write",
-            hooks: [
-              async (input: unknown) => {
-                const filePath = (input as { tool_input?: { file_path?: string } }).tool_input?.file_path;
-                if (filePath) logFile(op.name, filePath, "edited");
-                return {};
-              },
-            ],
-          },
-          {
-            matcher: "Bash",
-            hooks: [
-              async (input: unknown) => {
-                const cmd = (input as { tool_input?: { command?: string } }).tool_input?.command;
-                if (cmd) logActivity(op.name, `$ ${cmd.slice(0, 120)}`);
-                return {};
-              },
-            ],
-          },
-        ],
-      },
-    },
-  })) {
-    const mAny = msg as { type?: string };
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (mAny.type === "system") {
-      const sysMsg = msg as unknown as SDKSystemMessage;
-      if (sysMsg.subtype === "init") {
-        const sid = (sysMsg as SDKSystemMessage & { session_id?: string }).session_id;
-        if (sid) op.sessionId = sid;
+    try {
+      for await (const msg of queryFn({
+        prompt: task,
+        options: {
+          cwd,
+          allowedTools: toolsForPreset(op.permissionPreset),
+          agents: subagentDefs,
+          mcpServers: {
+            "claude-drive": { type: "http" as const, url: mcpUrl },
+          },
+          systemPrompt: buildOperatorSystemPrompt(op),
+          maxTurns,
+          ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+          abortController: controller,
+          hooks: {
+            PostToolUse: [
+              {
+                matcher: "Edit|Write",
+                hooks: [
+                  async (input: unknown) => {
+                    const filePath = (input as { tool_input?: { file_path?: string } }).tool_input?.file_path;
+                    if (filePath) logFile(op.name, filePath, "edited");
+                    return {};
+                  },
+                ],
+              },
+              {
+                matcher: "Bash",
+                hooks: [
+                  async (input: unknown) => {
+                    const cmd = (input as { tool_input?: { command?: string } }).tool_input?.command;
+                    if (cmd) logActivity(op.name, `$ ${cmd.slice(0, 120)}`);
+                    return {};
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      })) {
+        const mAny = msg as { type?: string };
+
+        if (mAny.type === "system") {
+          const sysMsg = msg as unknown as SDKSystemMessage;
+          if (sysMsg.subtype === "init") {
+            const sid = (sysMsg as SDKSystemMessage & { session_id?: string }).session_id;
+            if (sid) op.sessionId = sid;
+          }
+        } else if (mAny.type === "rate_limit_event") {
+          logActivity(op.name, "Rate limited — pausing");
+          speak("Rate limited. Pausing.");
+          const rle = msg as unknown as SDKRateLimitEvent;
+          const info = rle.rate_limit_info;
+          if (info) {
+            console.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
+          }
+        } else if (mAny.type === "result") {
+          const resultMsg = msg as unknown as SDKResultSuccess;
+          if (!resultMsg.is_error && resultMsg.result !== undefined) {
+            logActivity(op.name, resultMsg.result);
+            speak(`${op.name} done.`);
+          }
+        }
       }
-    } else if (mAny.type === "rate_limit_event") {
-      logActivity(op.name, "Rate limited — pausing");
-      speak("Rate limited. Pausing.");
-      const rle = msg as unknown as SDKRateLimitEvent;
-      const info = rle.rate_limit_info;
-      if (info) {
-        console.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
+      // Success — break out of retry loop
+      clearTimeout(timer);
+      return;
+    } catch (err) {
+      clearTimeout(timer);
+      const isAbort = err instanceof Error && err.name === "AbortError";
+      const isTimeout = isAbort || (err instanceof Error && err.message.includes("timeout"));
+      if (isTimeout) {
+        logActivity(op.name, `Timed out after ${timeoutMs}ms (attempt ${attempt}/${maxRetries})`);
+      } else {
+        logActivity(op.name, `Error (attempt ${attempt}/${maxRetries}): ${err}`);
       }
-    } else if (mAny.type === "result") {
-      const resultMsg = msg as unknown as SDKResultSuccess;
-      if (!resultMsg.is_error && resultMsg.result !== undefined) {
-        logActivity(op.name, resultMsg.result);
-        speak(`${op.name} done.`);
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(4, attempt - 1); // 1s, 4s, 16s
+        logActivity(op.name, `Retrying in ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
+      } else {
+        logActivity(op.name, `Failed after ${maxRetries} attempts`);
+        op.status = "completed";
       }
     }
   }
