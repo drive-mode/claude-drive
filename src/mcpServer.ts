@@ -22,6 +22,18 @@ import type { OnTaskComplete } from "./operatorManager.js";
 import { listPendingApprovals, respondToApproval } from "./approvalQueue.js";
 import type { WorktreeManager } from "./worktreeManager.js";
 import type { GitService } from "./gitService.js";
+import { PersistentMemory } from "./persistentMemory.js";
+import { SessionMemory } from "./sessionMemory.js";
+import { isToolAllowedForPreset } from "./toolAllowlist.js";
+import { StateSyncCoordinator } from "./stateSyncCoordinator.js";
+import { SyncLedger } from "./syncLedger.js";
+import { IntegrationQueue } from "./integrationQueue.js";
+import { processPipeline, getPipelineStats, type PipelineContext } from "./pipeline.js";
+import { getSteeringStats } from "./approvalGates.js";
+import { sanitizePrompt } from "./sanitizer.js";
+import { extractTangentNameAndTask } from "./tangentNameExtractor.js";
+import { runGovernanceScan, evaluateFocusGuard } from "./governance/index.js";
+import type { CommsAgent } from "./commsAgent.js";
 import { remember, recall, correct, forget, shareMemory } from "./memoryManager.js";
 import { memoryStore } from "./memoryStore.js";
 import type { MemoryKind } from "./memoryStore.js";
@@ -81,6 +93,12 @@ export interface McpServerOptions {
   worktreeManager?: WorktreeManager;
   gitService?: GitService;
   sessionId?: string;
+  workspaceRoot?: string;
+  persistentMemory?: PersistentMemory;
+  sessionMemory?: SessionMemory;
+  syncCoordinator?: StateSyncCoordinator;
+  integrationQueue?: IntegrationQueue;
+  commsAgent?: CommsAgent;
   onTaskComplete?: OnTaskComplete;
   dreamDaemon?: AutoDreamDaemon;
 }
@@ -397,6 +415,189 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     return { content: [{ type: "text", text }] };
   });
 
+  // ── Persistent Memory tools ──────────────────────────────────────────────
+
+  server.tool("persistent_memory_append", "Append a note to today's daily memory log", {
+    note: z.string(),
+    agent: z.string().optional(),
+  }, async ({ note, agent }) => {
+    if (!opts.persistentMemory) return { content: [{ type: "text", text: "Persistent memory not initialized (no workspace root)" }], isError: true };
+    await opts.persistentMemory.appendToDaily(note, agent);
+    return { content: [{ type: "text", text: "Appended to daily log" }] };
+  });
+
+  server.tool("persistent_memory_search", "Search persistent memory logs by keyword", {
+    keyword: z.string(),
+    limit: z.number().optional(),
+  }, async ({ keyword, limit }) => {
+    if (!opts.persistentMemory) return { content: [{ type: "text", text: "Persistent memory not initialized" }], isError: true };
+    const results = await opts.persistentMemory.search(keyword, limit ?? 10);
+    if (results.length === 0) return { content: [{ type: "text", text: `No results for "${keyword}"` }] };
+    const text = results.map((r) => `[${r.date}] (score: ${r.score}) ${r.snippet}`).join("\n\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("persistent_memory_write_curated", "Write/overwrite the curated MEMORY.md file", {
+    content: z.string(),
+  }, async ({ content }) => {
+    if (!opts.persistentMemory) return { content: [{ type: "text", text: "Persistent memory not initialized" }], isError: true };
+    await opts.persistentMemory.writeCurated(content);
+    return { content: [{ type: "text", text: "Curated memory updated" }] };
+  });
+
+  server.tool("persistent_memory_context", "Get full persistent memory context (curated + recent logs)", {}, async () => {
+    if (!opts.persistentMemory) return { content: [{ type: "text", text: "Persistent memory not initialized" }] };
+    const ctx = await opts.persistentMemory.buildPromptContext();
+    return { content: [{ type: "text", text: ctx || "(empty)" }] };
+  });
+
+  // ── Session Memory tools ────────────────────────────────────────────────
+
+  server.tool("session_memory_add_decision", "Record a key decision in session memory", {
+    decision: z.string(),
+    agent: z.string().optional(),
+  }, async ({ decision, agent }) => {
+    if (!opts.sessionMemory) return { content: [{ type: "text", text: "Session memory not initialized" }], isError: true };
+    opts.sessionMemory.addDecision(decision, agent);
+    return { content: [{ type: "text", text: "Decision recorded" }] };
+  });
+
+  server.tool("session_memory_context", "Get current session memory context string", {
+    operatorId: z.string().optional(),
+    visibility: z.enum(["isolated", "shared", "collaborative"]).optional(),
+  }, async ({ operatorId, visibility }) => {
+    if (!opts.sessionMemory) return { content: [{ type: "text", text: "(no session memory)" }] };
+    const text = operatorId
+      ? opts.sessionMemory.buildContextForOperator(operatorId, visibility ?? "shared")
+      : opts.sessionMemory.buildContextString();
+    return { content: [{ type: "text", text: text || "(empty)" }] };
+  });
+
+  // ── Sync Orchestration tools ────────────────────────────────────────────
+
+  server.tool("sync_status", "Get full sync status snapshot (all operators, proposals)", {}, async () => {
+    if (!opts.syncCoordinator) return { content: [{ type: "text", text: "Sync coordinator not available (not a git repo)" }], isError: true };
+    try {
+      const snapshot = await opts.syncCoordinator.computeSnapshot();
+      return { content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Sync error: ${e}` }], isError: true };
+    }
+  });
+
+  server.tool("sync_proposal_list", "List pending merge proposals", {}, async () => {
+    if (!opts.syncCoordinator) return { content: [{ type: "text", text: "Sync coordinator not available" }], isError: true };
+    const proposals = opts.syncCoordinator.getActiveProposals();
+    if (proposals.length === 0) return { content: [{ type: "text", text: "No pending proposals." }] };
+    const text = proposals.map((p) =>
+      `${p.id} [${p.status}] ${p.operatorName}: ${p.changedFiles.length} files changed${p.conflictingFiles.length > 0 ? `, ${p.conflictingFiles.length} conflicts` : ""}`
+    ).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("sync_proposal_apply", "Approve and apply a merge proposal", {
+    proposalId: z.string(),
+  }, async ({ proposalId }) => {
+    if (!opts.syncCoordinator || !opts.integrationQueue) {
+      return { content: [{ type: "text", text: "Sync system not available" }], isError: true };
+    }
+    const approved = opts.syncCoordinator.approveProposal(proposalId);
+    if (!approved) return { content: [{ type: "text", text: `Proposal not found or not pending: ${proposalId}` }], isError: true };
+    const proposal = opts.syncCoordinator.getProposal(proposalId);
+    if (!proposal) return { content: [{ type: "text", text: "Proposal disappeared after approval" }], isError: true };
+    opts.integrationQueue.enqueue(proposal);
+    const result = await opts.integrationQueue.processNext();
+    if (!result) return { content: [{ type: "text", text: "No proposal to process" }], isError: true };
+    if (result.success) {
+      opts.syncCoordinator.markApplied(proposalId, result.mergeCommit ?? "");
+      return { content: [{ type: "text", text: `Merged: ${result.mergeCommit}` }] };
+    } else {
+      opts.syncCoordinator.markFailed(proposalId, result.error ?? "unknown");
+      return { content: [{ type: "text", text: `Merge failed: ${result.error}${result.conflictFiles?.length ? `\nConflicts: ${result.conflictFiles.join(", ")}` : ""}` }], isError: true };
+    }
+  });
+
+  // ── Pipeline + Stats tools ──────────────────────────────────────────────
+
+  server.tool("pipeline_process", "Process user input through the full Drive pipeline", {
+    input: z.string(),
+  }, async ({ input }) => {
+    const pctx: PipelineContext = {
+      driveActive: driveMode.active,
+      driveSubMode: driveMode.subMode,
+      sessionMemory: opts.sessionMemory,
+      persistentMemory: opts.persistentMemory,
+      operatorRegistry: registry,
+    };
+    const result = await processPipeline(input, pctx);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  });
+
+  server.tool("steering_stats", "Get approval gate and pipeline statistics", {}, async () => {
+    const gateStats = getSteeringStats();
+    const pipeStats = getPipelineStats();
+    return { content: [{ type: "text", text: JSON.stringify({ gates: gateStats, pipeline: pipeStats }, null, 2) }] };
+  });
+
+  // ── Tangent tool ────────────────────────────────────────────────────────
+
+  server.tool("tangent_spawn", "Parse tangent command and spawn background operator", {
+    text: z.string().describe("Text after the tangent keyword, e.g. 'Alpha — research clerk integration'"),
+  }, async ({ text }) => {
+    const { name, task } = await extractTangentNameAndTask(text);
+    const op = registry.spawn(name, task, { role: "researcher", preset: "readonly" });
+    logActivity("Drive", `Tangent spawned ${op.name}: ${task}`);
+    return { content: [{ type: "text", text: `Spawned ${op.name} for: ${task}` }] };
+  });
+
+  // ── Sanitize tool ───────────────────────────────────────────────────────
+
+  // ── Governance tools ───────────────────────────────────────────────────
+
+  server.tool("governance_scan", "Run a full governance scan (entropy, findings, tasks)", {
+    rootDir: z.string().optional().describe("Workspace root (defaults to cwd)"),
+  }, async ({ rootDir }) => {
+    const root = rootDir ?? opts.workspaceRoot ?? process.cwd();
+    const result = await runGovernanceScan(root);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  });
+
+  server.tool("governance_focus_check", "Check if an operator stayed within task scope", {
+    operatorName: z.string(),
+    task: z.string(),
+    filesTouched: z.array(z.string()),
+  }, async ({ operatorName, task, filesTouched }) => {
+    const result = evaluateFocusGuard({ operatorName, task, filesTouched });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  });
+
+  // ── CommsAgent tools ──────────────────────────────────────────────────
+
+  server.tool("comms_push", "Push an event to the comms agent for batched reporting", {
+    type: z.enum(["progress", "completion", "sync", "error", "info"]),
+    operatorName: z.string(),
+    message: z.string(),
+  }, async ({ type, operatorName, message }) => {
+    if (!opts.commsAgent) {
+      return { content: [{ type: "text", text: "CommsAgent not initialized" }] };
+    }
+    opts.commsAgent.push({ type, operatorName, message, timestamp: Date.now() });
+    return { content: [{ type: "text", text: `Queued (${opts.commsAgent.pending} pending)` }] };
+  });
+
+  server.tool("comms_flush", "Force-flush comms agent (summarize and broadcast queued events)", {}, async () => {
+    if (!opts.commsAgent) {
+      return { content: [{ type: "text", text: "CommsAgent not initialized" }] };
+    }
+    const summary = await opts.commsAgent.flush();
+    return { content: [{ type: "text", text: summary ?? "(no events queued)" }] };
+  });
+
+  server.tool("sanitize_prompt", "Sanitize a prompt (remove injection patterns, truncate)", {
+    text: z.string(),
+  }, async ({ text }) => {
+    const result = sanitizePrompt(text);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   // ── Cost / stats tools ────────────────────────────────────────────────────
 
   server.tool("drive_get_costs", "Get cost and stats for all operators and plans", {}, async () => {
@@ -809,11 +1010,33 @@ export async function startMcpServerStdio(opts: Omit<McpServerOptions, "port">):
   process.stderr.write("[claude-drive] MCP server running over stdio\n");
 }
 
-export async function startMcpServer(opts: McpServerOptions): Promise<{ port: number }> {
+export async function startMcpServer(opts: McpServerOptions): Promise<{ port: number; close: () => void }> {
   const { port } = opts;
   const portRange: number = getConfig<number>("mcp.portRange") ?? 5;
 
   const httpServer = http.createServer(async (req, res) => {
+    // Health check endpoint — no session required
+    if (req.method === "GET" && req.url === "/health") {
+      const body = JSON.stringify({
+        status: "ok",
+        uptime: process.uptime(),
+        port: boundPort,
+        operators: opts.registry.getActive().length,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(body);
+      return;
+    }
+
+    // Shutdown endpoint — gracefully stop the daemon
+    if (req.method === "POST" && req.url === "/shutdown") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "shutting down" }));
+      cleanup();
+      httpServer.close(() => process.exit(0));
+      return;
+    }
+
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (req.method === "POST") {
@@ -864,7 +1087,8 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
       httpServer.listen(candidatePort, "127.0.0.1", () => resolve(true));
     });
     if (ok) {
-      boundPort = candidatePort;
+      const addr = httpServer.address();
+      boundPort = (typeof addr === "object" && addr !== null) ? addr.port : candidatePort;
       break;
     }
   }
@@ -889,5 +1113,11 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
 
   console.log(`[claude-drive] MCP server listening on http://127.0.0.1:${boundPort}/mcp`);
   console.log(`[claude-drive] Port file: ${getPortFilePath()}`);
-  return { port: boundPort };
+  return {
+    port: boundPort,
+    close: () => {
+      httpServer.close();
+      cleanup();
+    },
+  };
 }

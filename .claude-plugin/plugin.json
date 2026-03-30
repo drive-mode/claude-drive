@@ -1,0 +1,9 @@
+{
+  "name": "claude-drive",
+  "version": "0.1.0",
+  "description": "Voice-first multi-operator AI pair programming. Drive mode gives you a steering wheel for your agents — spawn, switch, and coordinate multiple Claude operators on one codebase, with live activity feed, TTS narration, and git worktree isolation per operator.",
+  "author": {
+    "name": "Harrison Halperin"
+  },
+  "homepage": "https://github.com/hhalperin/claude-drive"
+}

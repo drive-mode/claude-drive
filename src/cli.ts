@@ -13,6 +13,8 @@
  *   claude-drive config set <key> <value>  # Set a config value
  */
 import os from "os";
+import fs from "fs";
+import path from "path";
 import { Command } from "commander";
 import { createDriveModeManager, isSubMode, type DriveSubMode } from "./driveMode.js";
 import { OperatorRegistry, parseRole, parsePreset } from "./operatorRegistry.js";
@@ -48,6 +50,25 @@ program
   .option("--tui", "Render ink two-pane TUI instead of plain terminal output")
   .action(async (opts: { port: string; tui?: boolean }) => {
     const port = parseInt(opts.port, 10);
+
+    // Check for stale port file
+    const { readPortFile, getPortFilePath } = await import("./mcpServer.js");
+    const existingPort = readPortFile();
+    if (existingPort !== undefined) {
+      try {
+        const res = await fetch(`http://localhost:${existingPort}/health`);
+        if (res.ok) {
+          console.log(`[claude-drive] Already running on port ${existingPort}`);
+          process.exit(0);
+        }
+      } catch {
+        // Unreachable — stale port file, delete it
+        const fsSync = await import("fs");
+        try { fsSync.unlinkSync(getPortFilePath()); } catch { /* already gone */ }
+        console.log("[claude-drive] Removed stale port file.");
+      }
+    }
+
     driveMode.setActive(true);
 
     if (opts.tui) {
@@ -59,6 +80,53 @@ program
       printStatus(true, driveMode.subMode);
     }
 
+    // Initialize new services
+    const workspaceRoot = process.cwd();
+    const { PersistentMemory } = await import("./persistentMemory.js");
+    const { SessionMemory } = await import("./sessionMemory.js");
+    const persistentMemory = new PersistentMemory(workspaceRoot);
+    const sessionMemory = new SessionMemory();
+
+    // Initialize sync orchestration if in a git repo
+    let syncCoordinator: import("./stateSyncCoordinator.js").StateSyncCoordinator | undefined;
+    let integrationQueue: import("./integrationQueue.js").IntegrationQueue | undefined;
+    let gitService: import("./gitService.js").GitService | undefined;
+    let worktreeManager: import("./worktreeManager.js").WorktreeManager | undefined;
+    try {
+      const { execSync } = await import("child_process");
+      execSync("git rev-parse --is-inside-work-tree", { cwd: workspaceRoot, stdio: "ignore" });
+      const { GitService } = await import("./gitService.js");
+      const { WorktreeManager } = await import("./worktreeManager.js");
+      const { StateSyncCoordinator } = await import("./stateSyncCoordinator.js");
+      const { IntegrationQueue } = await import("./integrationQueue.js");
+      gitService = new GitService(workspaceRoot);
+      worktreeManager = new WorktreeManager(gitService, workspaceRoot);
+      syncCoordinator = new StateSyncCoordinator(gitService, registry, worktreeManager, workspaceRoot);
+      integrationQueue = new IntegrationQueue(gitService, syncCoordinator, registry);
+      if (!opts.tui) console.log("[claude-drive] Sync orchestration enabled (git repo detected).");
+    } catch {
+      if (!opts.tui) console.log("[claude-drive] Sync orchestration disabled (not a git repo).");
+    }
+
+    // Initialize CommsAgent
+    const { CommsAgent } = await import("./commsAgent.js");
+    const commsAgent = new CommsAgent();
+    commsAgent.onFlush((summary) => {
+      logActivity("comms", summary);
+      if (getConfig<boolean>("tts.enabled")) {
+        speak(summary);
+      }
+    });
+
+    // Lazy-import MCP server to keep startup fast when not needed
+    const { startMcpServer } = await import("./mcpServer.js");
+    const { port: boundPort } = await startMcpServer({
+      port, registry, driveMode,
+      persistentMemory, sessionMemory,
+      syncCoordinator, integrationQueue,
+      gitService, worktreeManager,
+      commsAgent,
+      workspaceRoot,
     // Validate SDK is available (fail fast instead of silent failure in runOperator)
     try {
       await import("@anthropic-ai/claude-agent-sdk");
@@ -162,6 +230,7 @@ program
       dreamDaemon.stop();
       void hookRegistry.execute("SessionStop", { event: "SessionStop", timestamp: Date.now() });
       driveMode.setActive(false);
+      commsAgent.dispose();
       deleteStatusFile();
       if (!opts.tui) console.log("\n[claude-drive] Shutting down.");
       process.exit(0);
@@ -326,6 +395,55 @@ program
     }
   });
 
+// ── stop ──────────────────────────────────────────────────────────────────
+
+program
+  .command("stop")
+  .description("Stop the running claude-drive daemon")
+  .action(async () => {
+    const { readPortFile, getPortFilePath } = await import("./mcpServer.js");
+    const port = readPortFile();
+    if (port === undefined) {
+      console.log("[claude-drive] Not running (no port file found).");
+      process.exit(0);
+    }
+    try {
+      await fetch(`http://localhost:${port}/shutdown`, { method: "POST" });
+      console.log("[claude-drive] Stopped.");
+    } catch {
+      // Server already gone — clean up port file as fallback
+      const fsSync = await import("fs");
+      try { fsSync.unlinkSync(getPortFilePath()); } catch { /* already gone */ }
+      console.log("[claude-drive] Server was not reachable; cleaned up port file.");
+    }
+  });
+
+// ── install ───────────────────────────────────────────────────────────────
+
+program
+  .command("install")
+  .description("Register claude-drive as an MCP server in Claude Desktop and ~/.claude/settings.json")
+  .action(async () => {
+    const { readPortFile } = await import("./mcpServer.js");
+    const port = readPortFile() ?? getConfig<number>("mcp.port") ?? 7891;
+    const entry = { url: `http://localhost:${port}/mcp` };
+    const targets: string[] = [
+      path.join(os.homedir(), ".claude", "settings.json"),
+    ];
+    if (process.env.APPDATA) {
+      targets.push(path.join(process.env.APPDATA, "Claude", "claude_desktop_config.json"));
+    }
+    for (const filePath of targets) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      } catch { /* file missing or unparseable — start fresh */ }
+      const mcpServers = (existing.mcpServers as Record<string, unknown>) ?? {};
+      mcpServers["claude-drive"] = entry;
+      existing.mcpServers = mcpServers;
+      fs.writeFileSync(filePath, JSON.stringify(existing, null, 2) + "\n");
+      console.log(`[claude-drive] Written: ${filePath}`);
 // ── statusline ───────────────────────────────────────────────────────
 
 const statuslineCmd = program.command("statusline").description("Claude Code status line integration");

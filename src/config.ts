@@ -28,6 +28,7 @@ const DEFAULTS: Record<string, unknown> = {
   "operators.maxSubagents": 2,
   "operators.namePool": [],  // empty = numbered "Operator 1", "Operator 2", …; set custom names to override
   "operators.defaultPermissionPreset": "standard",
+  "operators.timeoutMs": 300000,
 
   // MCP server
   "mcp.port": 7891,
@@ -70,6 +71,36 @@ const DEFAULTS: Record<string, unknown> = {
   // Router
   "router.llmEnabled": false,
 
+  // Session Memory
+  "sessionMemory.maxEntries": 50,
+  "sessionMemory.tokenBudget": 500,
+
+  // Persistent Memory
+  "persistentMemory.retentionDays": 30,
+
+  // Sanitizer
+  "sanitizer.maxLength": 2000,
+
+  // Glossary (user-defined expansions)
+  "glossary": [],
+
+  // Model tiers
+  "models.routing": "claude-3-5-haiku-20241022",
+  "models.planning": "claude-sonnet-4-20250514",
+  "models.execution": "claude-sonnet-4-20250514",
+  "models.reasoning": "claude-opus-4-20250514",
+
+  // Tangent flow
+  "agents.tangentKeyword": "tangent",
+  "agents.tangentAutoConfirm": true,
+  "agents.tangentConfirmationTimeout": 5000,
+
+  // Operators — permission overrides per name
+  "operators.permissionOverrides": {},
+
+  // CommsAgent
+  "commsAgent.enabled": true,
+  "commsAgent.idleSeconds": 30,
   // Memory
   "memory.maxEntries": 500,
   "memory.maxPerOperator": 100,

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "claude-drive": {
+      "url": "http://localhost:7891/mcp"
+    }
+  }
+}
