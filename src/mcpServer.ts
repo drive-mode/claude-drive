@@ -558,6 +558,15 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
       return;
     }
 
+    // Shutdown endpoint — gracefully stop the daemon
+    if (req.method === "POST" && req.url === "/shutdown") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "shutting down" }));
+      cleanup();
+      httpServer.close(() => process.exit(0));
+      return;
+    }
+
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (req.method === "POST") {

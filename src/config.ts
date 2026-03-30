@@ -27,6 +27,7 @@ const DEFAULTS: Record<string, unknown> = {
   "operators.maxSubagents": 2,
   "operators.namePool": ["Alpha", "Beta", "Gamma", "Delta", "Echo", "Foxtrot"],
   "operators.defaultPermissionPreset": "standard",
+  "operators.timeoutMs": 300000,
 
   // MCP server
   "mcp.port": 7891,

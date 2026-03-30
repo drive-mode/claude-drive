@@ -8,3 +8,4 @@ out/
 Thumbs.db
 .claude/worktrees/
 .claude/settings.local.json
+*.docx

@@ -305,13 +305,14 @@ program
       process.exit(0);
     }
     try {
-      await fetch(`http://localhost:${port}/mcp`, { method: "DELETE" });
+      await fetch(`http://localhost:${port}/shutdown`, { method: "POST" });
+      console.log("[claude-drive] Stopped.");
     } catch {
-      // Server already gone
+      // Server already gone — clean up port file as fallback
+      const fsSync = await import("fs");
+      try { fsSync.unlinkSync(getPortFilePath()); } catch { /* already gone */ }
+      console.log("[claude-drive] Server was not reachable; cleaned up port file.");
     }
-    const fsSync = await import("fs");
-    try { fsSync.unlinkSync(getPortFilePath()); } catch { /* already gone */ }
-    console.log("[claude-drive] Stopped.");
   });
 
 // ── install ───────────────────────────────────────────────────────────────

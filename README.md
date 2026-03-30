@@ -86,12 +86,53 @@ claude-drive config get tts.backend
 
 Config file: `~/.claude-drive/config.json`
 
-### Utility
+### Daemon Control
 
 ```bash
-claude-drive port     # Print the live MCP URL
-claude-drive install  # Register in Claude Code settings
+claude-drive stop             # Stop the running daemon (POST /shutdown)
+claude-drive port             # Print the live MCP URL
+claude-drive port --json      # Output as JSON: { url, port }
+claude-drive install          # Register in Claude Code + Claude Desktop settings
 ```
+
+### Health Check
+
+```bash
+curl http://localhost:7891/health
+# → { "status": "ok", "uptime": 42.1, "port": 7891, "operators": 2 }
+```
+
+## CLI Quick Reference
+
+| Command | Description |
+|---------|-------------|
+| `claude-drive start` | Start MCP server daemon |
+| `claude-drive start --tui` | Start with Ink two-pane TUI |
+| `claude-drive stop` | Stop the running daemon |
+| `claude-drive run "task"` | One-shot task execution |
+| `claude-drive port [--json]` | Print live MCP URL |
+| `claude-drive install` | Register in Claude Code settings |
+| `claude-drive operator spawn` | Spawn a new operator |
+| `claude-drive operator list` | List active operators |
+| `claude-drive operator switch <name>` | Switch foreground operator |
+| `claude-drive operator dismiss <name>` | Dismiss an operator |
+| `claude-drive mode set <mode>` | Set drive sub-mode |
+| `claude-drive mode status` | Show current drive state |
+| `claude-drive tts "text"` | Speak text via TTS |
+| `claude-drive config set <key> <value>` | Set config value |
+| `claude-drive config get <key>` | Get config value |
+| `claude-drive serve-stdio` | Run MCP over stdin/stdout (plugin mode) |
+
+## Hooks
+
+claude-drive ships a `hooks/hooks.json` file that Claude Code can use to auto-check daemon status on session start. Copy or symlink it into your project's `.claude/` directory.
+
+## Skills
+
+The `.claude-plugin/` directory contains Claude Code plugin packaging:
+- `/drive-status` — Show current drive state and operator status
+- `/drive-mode` — Switch drive modes and manage operators
+- `/run-operator` — Dispatch tasks to operators
 
 ## Configuration Reference
 
@@ -107,6 +148,7 @@ All config keys can be set via `claude-drive config set <key> <value>`, env vars
 | `operators.maxConcurrent` | `3` | Max simultaneous operators |
 | `operators.maxSubagents` | `2` | Max subagents per operator |
 | `operators.defaultPermissionPreset` | `standard` | Default permission: `readonly`, `standard`, `full` |
+| `operators.timeoutMs` | `300000` | Operator execution timeout (ms) |
 | `mcp.port` | `7891` | MCP server port |
 | `mcp.portRange` | `5` | Ports to try on bind failure |
 | `drive.defaultMode` | `agent` | Default sub-mode |
@@ -121,22 +163,32 @@ cli.ts
   ├── driveMode.ts          — state machine (active + subMode)
   ├── operatorRegistry.ts   — operator lifecycle (spawn/switch/dismiss/merge)
   ├── operatorManager.ts    — wraps @anthropic-ai/claude-agent-sdk query() per operator
-  ├── mcpServer.ts          — MCP server on :7891, exposes Drive tools to Claude Code
+  ├── mcpServer.ts          — MCP server on :7891 + /health + /shutdown endpoints
+  ├── pipeline.ts           — multi-stage prompt processing pipeline
   ├── agentOutput.ts        — terminal renderer + optional Ink TUI
   ├── router.ts             — intent classification (plan/agent/ask/debug)
+  ├── modelSelector.ts      — tiered model routing (routing/planning/execution/reasoning)
   ├── tts.ts                — TTS dispatch (edgeTts → piper → say)
+  ├── commsAgent.ts         — batched operator status reporting
   ├── approvalGates.ts      — safety gates (block/warn/log patterns)
+  ├── sanitizer.ts          — prompt injection prevention + truncation
+  ├── fillerCleaner.ts      — dictation filler word removal
+  ├── glossaryExpander.ts   — glossary trigger expansion
+  ├── toolAllowlist.ts      — MCP tool permission enforcement per preset
   ├── worktreeManager.ts    — git worktree isolation per operator
   ├── sessionManager.ts     — save/restore sessions
+  ├── sessionMemory.ts      — in-session operator memory (turns/decisions/tasks)
+  ├── persistentMemory.ts   — two-layer persistent memory (curated + daily logs)
   ├── store.ts              — JSON KV store (persists state)
-  └── config.ts             — config loader (~/.claude-drive/config.json)
+  ├── config.ts             — config loader (~/.claude-drive/config.json)
+  └── governance/           — project graph, entropy, focus guard, task ledger
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for the full architecture guide with diagrams.
 
 ## MCP Tools
 
-When claude-drive is running, it exposes 26 tools to Claude Code via MCP. See [`docs/api-reference.md`](docs/api-reference.md) for the complete reference.
+When claude-drive is running, it exposes 42+ tools to Claude Code via MCP. See [`docs/api-reference.md`](docs/api-reference.md) for the complete reference.
 
 Key tool groups: operator management, agent screen logging, TTS, drive mode, task execution, approval gates, git worktrees, and session management.
 
