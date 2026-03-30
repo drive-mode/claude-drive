@@ -3,6 +3,14 @@
  */
 import { toolsForPreset, buildOperatorSystemPrompt, buildSubagentDefs } from "../src/operatorManager.js";
 import type { OperatorContext } from "../src/operatorRegistry.js";
+import { memoryStore } from "../src/memoryStore.js";
+
+beforeEach(() => {
+  // Clear singleton memory to prevent cross-test contamination
+  for (const e of memoryStore.getAll()) {
+    memoryStore.remove(e.id);
+  }
+});
 
 function makeOp(overrides: Partial<OperatorContext> = {}): OperatorContext {
   return {
@@ -16,6 +24,7 @@ function makeOp(overrides: Partial<OperatorContext> = {}): OperatorContext {
     visibility: "shared",
     depth: 0,
     permissionPreset: "standard",
+    stats: { totalCostUsd: 0, totalDurationMs: 0, totalApiDurationMs: 0, totalTurns: 0, taskCount: 0 },
     ...overrides,
   };
 }

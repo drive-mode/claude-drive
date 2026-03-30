@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run compile)",
+      "Bash(npm run watch)",
+      "Bash(npm test)",
+      "Bash(npm start)",
+      "Bash(node out/cli.js *)",
+      "Bash(git *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(mkdir *)",
+      "Bash(rm *.tmp)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(npm publish *)",
+      "Bash(git push --force *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm run compile 2>&1 | tail -3"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -6,12 +6,20 @@ claude-drive gives you a steering wheel for your Claude agents — spawn, switch
 
 ## What It Does
 
-- **Multi-operator orchestration** — spawn named operators (Claude subagents) and switch between them mid-session
+- **Multi-operator orchestration** — spawn named operators (Claude subagents) and switch between them mid-session, with configurable concurrency limits (default 3)
 - **Voice narration** — TTS output via edgeTts, piper, or system `say` backends
 - **Git worktree isolation** — each operator gets its own worktree; merge when done
 - **MCP server** — exposes Drive tools to Claude Code via `localhost:7891`
 - **Approval gates** — safety checks that block, warn, or log dangerous operations before they run
 - **Session persistence** — save and restore operator sessions across restarts
+- **MCP server** — exposes 46+ Drive tools to Claude Code via `localhost:7891`
+- **Task cancellation** — AbortController wired through operator lifecycle; `dismiss` cancels running tasks and cascades to children
+- **Structured memory** — typed memory entries with confidence decay, contextual retrieval, and automatic consolidation (auto-dream)
+- **Session checkpoints** — snapshot and fork session state at any point
+- **Lifecycle hooks** — pre/post hooks for operator events
+- **Dynamic skills** — load and register skills at runtime
+- **Safety gates** — approval gates with per-operator throttling for dangerous operations
+- **Atomic persistence** — all file writes use tmp+rename pattern to prevent corruption
 - **One-shot tasks** — run a prompt headlessly without starting a full session
 - **Ink TUI** — optional two-pane terminal UI with live activity feed and operator status
 
@@ -35,6 +43,7 @@ claude-drive install
 claude-drive start
 
 # 4. Open Claude Code in another terminal — Drive tools are now available
+npm run compile
 ```
 
 ## Usage
@@ -82,6 +91,7 @@ claude-drive config set tts.backend edgeTts
 claude-drive config set tts.enabled true
 claude-drive config set mcp.port 7891
 claude-drive config get tts.backend
+claude-drive config set operators.maxConcurrent 3
 ```
 
 Config file: `~/.claude-drive/config.json`
@@ -182,6 +192,27 @@ cli.ts
   ├── store.ts              — JSON KV store (persists state)
   ├── config.ts             — config loader (~/.claude-drive/config.json)
   └── governance/           — project graph, entropy, focus guard, task ledger
+cli.ts (fail-fast SDK validation)
+  ├── driveMode.ts          — state machine (active operator + subMode)
+  ├── operatorRegistry.ts   — operator lifecycle (spawn/switch/dismiss/merge + AbortController)
+  ├── operatorManager.ts    — wraps @anthropic-ai/claude-agent-sdk query() per operator
+  ├── mcpServer.ts          — MCP server on :7891, exposes Drive tools, maxConcurrent enforcement
+  ├── agentOutput.ts        — terminal renderer (Ink/React TUI)
+  ├── tts.ts                — TTS dispatch (edgeTts → piper → say)
+  ├── memoryStore.ts        — typed memory entries with confidence decay
+  ├── memoryManager.ts      — memory retrieval and contextual search
+  ├── autoDream.ts          — automatic memory consolidation during idle
+  ├── checkpoint.ts         — session state snapshots and fork support
+  ├── hooks.ts              — pre/post lifecycle hooks for operator events
+  ├── skillLoader.ts        — dynamic skill loading and registration
+  ├── approvalGates.ts      — safety gates with per-operator throttling
+  ├── approvalQueue.ts      — approval queue for dangerous operations
+  ├── sessionManager.ts     — session lifecycle
+  ├── sessionStore.ts       — session persistence (atomic writes)
+  ├── worktreeManager.ts    — git worktree create/merge/cleanup
+  ├── atomicWrite.ts        — shared atomic write utility (tmp + rename)
+  ├── store.ts              — JSON KV store (persists state, atomic writes)
+  └── config.ts             — config loader (~/.claude-drive/config.json)
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for the full architecture guide with diagrams.
@@ -195,11 +226,18 @@ Key tool groups: operator management, agent screen logging, TTS, drive mode, tas
 ## Development
 
 ```bash
+npm run compile  # TypeScript build
 npm run watch    # TypeScript watch mode
-npm test         # Jest unit tests
+npm test         # Jest unit tests (176 tests across 17 files)
 ```
 
 See [`docs/onboarding.md`](docs/onboarding.md) for the full contributor guide.
+## Pinned Dependencies
+
+SDK versions are pinned to exact versions (not `latest`) for reproducible builds:
+
+- `@anthropic-ai/claude-agent-sdk@0.2.77`
+- `@anthropic-ai/sdk@0.79.0`
 
 ## Relationship to cursor-drive
 

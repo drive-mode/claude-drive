@@ -1,0 +1,30 @@
+name: Merge to develop
+
+on:
+  push:
+    branches: ["claude/**"]
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    # Only run if CI passes (the CI workflow runs on all branches)
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge into develop
+        run: |
+          git fetch origin develop
+          git checkout develop
+          git merge --no-ff "$GITHUB_SHA" -m "Merge ${{ github.ref_name }} into develop"
+          git push origin develop

@@ -6,6 +6,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { atomicWriteJSON } from "./atomicWrite.js";
 
 const CONFIG_FILE = path.join(os.homedir(), ".claude-drive", "config.json");
 
@@ -25,7 +26,7 @@ const DEFAULTS: Record<string, unknown> = {
   // Operators
   "operators.maxConcurrent": 3,
   "operators.maxSubagents": 2,
-  "operators.namePool": ["Alpha", "Beta", "Gamma", "Delta", "Echo", "Foxtrot"],
+  "operators.namePool": [],  // empty = numbered "Operator 1", "Operator 2", …; set custom names to override
   "operators.defaultPermissionPreset": "standard",
   "operators.timeoutMs": 300000,
 
@@ -56,6 +57,16 @@ const DEFAULTS: Record<string, unknown> = {
   "approvalGates.blockPatterns": [],
   "approvalGates.warnPatterns": [],
   "approvalGates.logPatterns": [],
+
+  // Status line
+  "statusLine.enabled": true,
+  "statusLine.padding": 2,
+  "statusLine.showModel": true,
+  "statusLine.showContext": true,
+  "statusLine.showCost": true,
+  "statusLine.showDriveState": true,
+  "statusLine.showOperatorTask": true,
+  "statusLine.maxTaskLength": 40,
 
   // Router
   "router.llmEnabled": false,
@@ -90,6 +101,52 @@ const DEFAULTS: Record<string, unknown> = {
   // CommsAgent
   "commsAgent.enabled": true,
   "commsAgent.idleSeconds": 30,
+  // Memory
+  "memory.maxEntries": 500,
+  "memory.maxPerOperator": 100,
+  "memory.defaultConfidence": 0.8,
+  "memory.decayEnabled": true,
+  "memory.decayHalfLifeHours": 168,  // 1 week
+
+  // Hooks
+  "hooks.enabled": true,
+  "hooks.directory": "~/.claude-drive/hooks",
+  "hooks.definitions": [],
+
+  // Skills
+  "skills.directory": "~/.claude-drive/skills",
+  "skills.enabled": true,
+
+  // Sessions (enhanced)
+  "sessions.maxCheckpoints": 20,
+  "sessions.autoCheckpoint": false,
+  "sessions.autoCheckpointIntervalMs": 300000,  // 5 minutes
+
+  // Auto-Dream
+  "dream.enabled": true,
+  "dream.intervalMs": 900000,        // 15 minutes
+  "dream.minEntries": 10,
+  "dream.pruneThreshold": 0.2,
+  "dream.mergeThreshold": 0.7,
+  "dream.maxAgeMs": 604800000,       // 7 days
+
+  // Reflection gates (AutoResearch pattern)
+  "reflection.enabled": true,
+  "reflection.rulesFile": "~/.claude-drive/reflection-rules.json",
+  "reflection.reflectorModel": "haiku",
+
+  // Evaluation harness
+  "evaluation.scenariosDir": "~/.claude-drive/eval-scenarios",
+  "evaluation.resultsDir": "~/.claude-drive/eval-results",
+  "evaluation.defaultTimeoutMs": 60000,
+  "evaluation.passThreshold": 0.7,
+
+  // Prompt optimizer (AutoResearch loop)
+  "optimizer.enabled": true,
+  "optimizer.maxIterations": 20,
+  "optimizer.improvementThreshold": 0.02,
+  "optimizer.checkpointEvery": 5,
+  "optimizer.mutationModel": "claude-haiku-4-5-20251001",
 };
 
 let fileConfig: Record<string, unknown> = {};
@@ -118,7 +175,14 @@ export function getConfig<T>(key: string): T {
 
   // Check env var: "tts.backend" → "CLAUDE_DRIVE_TTS_BACKEND"
   const envKey = "CLAUDE_DRIVE_" + key.toUpperCase().replace(/\./g, "_");
-  if (process.env[envKey] !== undefined) return process.env[envKey] as unknown as T;
+  if (process.env[envKey] !== undefined) {
+    const raw = process.env[envKey]!;
+    // Coerce env string to match the type of the default value
+    const defaultVal = DEFAULTS[key];
+    if (typeof defaultVal === "number") return Number(raw) as unknown as T;
+    if (typeof defaultVal === "boolean") return (raw === "true" || raw === "1") as unknown as T;
+    return raw as unknown as T;
+  }
 
   if (key in fileConfig) return fileConfig[key] as T;
   if (key in DEFAULTS) return DEFAULTS[key] as T;
@@ -131,8 +195,7 @@ export function saveConfig(key: string, value: unknown): void {
   loadFile();
   fileConfig[key] = value;
   try {
-    fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(fileConfig, null, 2), "utf-8");
+    atomicWriteJSON(CONFIG_FILE, fileConfig);
   } catch (e) {
     console.error("[config] Failed to save:", e);
   }

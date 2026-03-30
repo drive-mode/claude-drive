@@ -4,6 +4,7 @@
  * Adapted from cursor-drive: removed vscode deps, wired to agentOutput + config.
  */
 import http from "http";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -13,9 +14,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { OperatorRegistry } from "./operatorRegistry.js";
 import type { DriveModeManager } from "./driveMode.js";
+import { getConfig } from "./config.js";
 import { logActivity, logFile, logDecision, agentOutput } from "./agentOutput.js";
 import { speak, stop as ttsStop } from "./tts.js";
 import { runOperator } from "./operatorManager.js";
+import type { OnTaskComplete } from "./operatorManager.js";
 import { listPendingApprovals, respondToApproval } from "./approvalQueue.js";
 import type { WorktreeManager } from "./worktreeManager.js";
 import type { GitService } from "./gitService.js";
@@ -31,6 +34,31 @@ import { sanitizePrompt } from "./sanitizer.js";
 import { extractTangentNameAndTask } from "./tangentNameExtractor.js";
 import { runGovernanceScan, evaluateFocusGuard } from "./governance/index.js";
 import type { CommsAgent } from "./commsAgent.js";
+import { remember, recall, correct, forget, shareMemory } from "./memoryManager.js";
+import { memoryStore } from "./memoryStore.js";
+import type { MemoryKind } from "./memoryStore.js";
+import { hookRegistry } from "./hooks.js";
+import type { HookEvent } from "./hooks.js";
+import { skillRegistry, loadDefaultSkills } from "./skillLoader.js";
+import {
+  createCheckpoint, restoreCheckpoint, listCheckpoints, forkSession,
+} from "./checkpoint.js";
+import { trackEvent } from "./sessionManager.js";
+import { AutoDreamDaemon } from "./autoDream.js";
+import {
+  getReflectionRules, getDefaultRules, addReflectionRule,
+  removeReflectionRule, toggleReflectionRule,
+} from "./reflectionGate.js";
+import type { ReflectionHookEvent } from "./reflectionGate.js";
+import {
+  loadScenarios, loadScenariosByTag, buildEvalResult, buildSuiteResult,
+  compareResults, saveResult, loadResults,
+} from "./evaluationHarness.js";
+import {
+  startOptimization, stopOptimization, getOptimizationStatus,
+  listOptimizationRuns, getOptimizationSummary, ALL_MUTATION_OPERATORS,
+} from "./promptOptimizer.js";
+import type { MutationOperator } from "./promptOptimizer.js";
 
 export function getPortFilePath(): string {
   return path.join(os.homedir(), ".claude-drive", "port");
@@ -49,7 +77,9 @@ export function readPortFile(): number | undefined {
 function writePortFile(port: number): void {
   const filePath = getPortFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, String(port), "utf-8");
+  const tmp = filePath + ".tmp";
+  fs.writeFileSync(tmp, String(port), "utf-8");
+  fs.renameSync(tmp, filePath);
 }
 
 function deletePortFile(): void {
@@ -69,10 +99,42 @@ export interface McpServerOptions {
   syncCoordinator?: StateSyncCoordinator;
   integrationQueue?: IntegrationQueue;
   commsAgent?: CommsAgent;
+  onTaskComplete?: OnTaskComplete;
+  dreamDaemon?: AutoDreamDaemon;
 }
 
-// Map of sessionId → { transport, server }
-const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+// Map of sessionId → { transport, server, lastAccess }
+const MAX_SESSIONS = 100;
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer; lastAccess: number }>();
+
+function cleanupStaleSessions(): void {
+  const now = Date.now();
+  for (const [id, entry] of sessions) {
+    if (now - entry.lastAccess > SESSION_TTL_MS) {
+      sessions.delete(id);
+      void entry.transport.close().catch(() => {});
+    }
+  }
+}
+
+function evictOldestSession(): void {
+  let oldestId: string | undefined;
+  let oldestTime = Infinity;
+  for (const [id, entry] of sessions) {
+    if (entry.lastAccess < oldestTime) {
+      oldestTime = entry.lastAccess;
+      oldestId = id;
+    }
+  }
+  if (oldestId) {
+    const entry = sessions.get(oldestId)!;
+    sessions.delete(oldestId);
+    void entry.transport.close().catch(() => {});
+  }
+}
 
 function buildMcpServer(opts: McpServerOptions): McpServer {
   const { registry, driveMode } = opts;
@@ -201,11 +263,19 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     role: z.enum(["implementer", "reviewer", "tester", "researcher", "planner"]).optional(),
     preset: z.enum(["readonly", "standard", "full"]).optional(),
   }, async ({ task, operatorName, role, preset }) => {
+    // Enforce maxConcurrent limit
+    const maxConcurrent = getConfig<number>("operators.maxConcurrent") ?? 3;
+    const activeCount = registry.getActive().filter((o) => o.status === "active" || o.status === "background").length;
+    if (activeCount >= maxConcurrent) {
+      return { content: [{ type: "text", text: `Cannot dispatch: ${activeCount} operators active (max ${maxConcurrent}). Dismiss an operator first.` }], isError: true };
+    }
+
     let op = operatorName ? registry.findByNameOrId(operatorName) : registry.getForeground();
     if (!op) {
       op = registry.spawn(operatorName, task, { role, preset });
     }
-    void runOperator(op, task, { allOperators: registry.getActive() });
+    runOperator(op, task, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete })
+      .catch((e) => console.error(`[drive_run_task] Error in operator ${op!.name}:`, e));
     return { content: [{ type: "text", text: `Task dispatched to ${op.name}: ${task}` }] };
   });
 
@@ -528,6 +598,406 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
   }, async ({ text }) => {
     const result = sanitizePrompt(text);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  // ── Cost / stats tools ────────────────────────────────────────────────────
+
+  server.tool("drive_get_costs", "Get cost and stats for all operators and plans", {}, async () => {
+    const ops = registry.getActive();
+    const totals = registry.getTotalStats();
+    const all = registry.list();
+    const lines: string[] = [];
+    lines.push("=== Operator Costs ===");
+    for (const op of all) {
+      const s = op.stats;
+      if (s.taskCount === 0) {
+        lines.push(`  ${op.name} [${op.status}]: no tasks completed`);
+      } else {
+        lines.push(`  ${op.name} [${op.status}]: $${s.totalCostUsd.toFixed(4)} | ${s.totalTurns} turns | ${s.taskCount} task(s) | ${Math.round(s.totalDurationMs / 1000)}s`);
+      }
+    }
+    lines.push(`\n=== Totals ===`);
+    lines.push(`  Cost: $${totals.totalCostUsd.toFixed(4)} | Turns: ${totals.totalTurns} | Tasks: ${totals.taskCount}`);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("operator_record_cost", "Record task cost stats for an operator", {
+    nameOrId: z.string(),
+    costUsd: z.number(),
+    durationMs: z.number(),
+    apiDurationMs: z.number().optional(),
+    turns: z.number(),
+  }, async ({ nameOrId, costUsd, durationMs, apiDurationMs, turns }) => {
+    const ok = registry.recordTaskStats(nameOrId, costUsd, durationMs, apiDurationMs ?? 0, turns);
+    return { content: [{ type: "text", text: ok ? `Recorded: $${costUsd.toFixed(4)} for ${nameOrId}` : `Operator not found: ${nameOrId}` }] };
+  });
+
+  // ── Memory tools ──────────────────────────────────────────────────────────
+
+  server.tool("memory_remember", "Store a typed memory entry for an operator", {
+    operatorName: z.string(),
+    kind: z.enum(["fact", "preference", "correction", "decision", "context"]),
+    content: z.string(),
+    tags: z.array(z.string()).optional(),
+  }, async ({ operatorName, kind, content, tags }) => {
+    const op = registry.findByNameOrId(operatorName);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${operatorName}` }], isError: true };
+    const entry = remember(op.id, kind as MemoryKind, content, tags);
+    return { content: [{ type: "text", text: `Remembered [${kind}]: ${entry.id}` }] };
+  });
+
+  server.tool("memory_recall", "Query memory entries", {
+    operatorName: z.string().optional(),
+    kinds: z.array(z.enum(["fact", "preference", "correction", "decision", "context"])).optional(),
+    tags: z.array(z.string()).optional(),
+    search: z.string().optional(),
+    limit: z.number().optional(),
+  }, async ({ operatorName, kinds, tags, search, limit }) => {
+    const op = operatorName ? registry.findByNameOrId(operatorName) : undefined;
+    const entries = recall(op?.id, {
+      kinds: kinds as MemoryKind[] | undefined,
+      tags,
+      search,
+      limit: limit ?? 20,
+    });
+    if (entries.length === 0) return { content: [{ type: "text", text: "No memories found." }] };
+    const text = entries.map((e) =>
+      `[${e.kind}] (${e.id.slice(0, 8)}) conf=${e.confidence.toFixed(2)} ${e.operatorId ? "" : "(shared)"} ${e.content}`
+    ).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("memory_correct", "Supersede a memory entry with corrected content", {
+    operatorName: z.string(),
+    oldId: z.string(),
+    newContent: z.string(),
+  }, async ({ operatorName, oldId, newContent }) => {
+    const op = registry.findByNameOrId(operatorName);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${operatorName}` }], isError: true };
+    const entry = correct(op.id, oldId, newContent);
+    if (!entry) return { content: [{ type: "text", text: `Memory entry not found: ${oldId}` }], isError: true };
+    return { content: [{ type: "text", text: `Corrected: ${entry.id} supersedes ${oldId}` }] };
+  });
+
+  server.tool("memory_forget", "Remove a memory entry", {
+    id: z.string(),
+  }, async ({ id }) => {
+    const ok = forget(id);
+    return { content: [{ type: "text", text: ok ? `Forgotten: ${id}` : `Not found: ${id}` }] };
+  });
+
+  server.tool("memory_share", "Promote an operator memory to shared/global", {
+    id: z.string(),
+  }, async ({ id }) => {
+    const ok = shareMemory(id);
+    return { content: [{ type: "text", text: ok ? `Shared: ${id}` : `Not found: ${id}` }] };
+  });
+
+  // ── Hook tools ───────────────────────────────────────────────────────────
+
+  // hooks_register and hooks_unregister intentionally omitted — hooks with
+  // "command" type execute arbitrary shell commands, so registration is
+  // restricted to trusted sources (config file, ~/.claude-drive/hooks/).
+
+  server.tool("hooks_list", "List registered hooks", {
+    event: z.string().optional(),
+  }, async ({ event }) => {
+    const hooks = hookRegistry.list(event as HookEvent | undefined);
+    if (hooks.length === 0) return { content: [{ type: "text", text: "No hooks registered." }] };
+    const text = hooks.map((h) =>
+      `${h.id} [${h.event}] ${h.type}${h.matcher ? ` matcher=${h.matcher}` : ""} priority=${h.priority ?? 100}`
+    ).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  // ── Skill tools ──────────────────────────────────────────────────────────
+
+  server.tool("skill_list", "List available skills", {}, async () => {
+    const skills = skillRegistry.list();
+    if (skills.length === 0) return { content: [{ type: "text", text: "No skills available. Add .md files to ~/.claude-drive/skills/" }] };
+    const text = skills.map((s) =>
+      `${s.name}: ${s.description}${s.tags ? ` [${s.tags.join(", ")}]` : ""}${s.parameters ? ` params: ${s.parameters.map((p) => p.name).join(", ")}` : ""}`
+    ).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("skill_load", "Load a skill and return its resolved prompt", {
+    name: z.string(),
+    params: z.record(z.string(), z.string()).optional(),
+  }, async ({ name, params }) => {
+    try {
+      const prompt = skillRegistry.resolve(name, params as Record<string, string> | undefined);
+      if (!prompt) return { content: [{ type: "text", text: `Skill not found: ${name}` }], isError: true };
+      return { content: [{ type: "text", text: prompt }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
+    }
+  });
+
+  server.tool("skill_run", "Load a skill and dispatch to an operator", {
+    name: z.string(),
+    operatorName: z.string().optional(),
+    params: z.record(z.string(), z.string()).optional(),
+  }, async ({ name, operatorName, params }) => {
+    try {
+      const prompt = skillRegistry.resolve(name, params as Record<string, string> | undefined);
+      if (!prompt) return { content: [{ type: "text", text: `Skill not found: ${name}` }], isError: true };
+      const skill = skillRegistry.get(name)!;
+      let op = operatorName ? registry.findByNameOrId(operatorName) : registry.getForeground();
+      if (!op) {
+        op = registry.spawn(operatorName ?? name, prompt, {
+          role: skill.requiredRole,
+          preset: skill.requiredPreset,
+        });
+      }
+      runOperator(op, prompt, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete })
+        .catch((e) => console.error(`[skill_run] Error in operator ${op!.name}:`, e));
+      return { content: [{ type: "text", text: `Skill "${name}" dispatched to ${op.name}` }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
+    }
+  });
+
+  // ── Enhanced Session / Checkpoint tools ──────────────────────────────────
+
+  server.tool("session_checkpoint", "Create a checkpoint of current state", {
+    name: z.string().optional(),
+    description: z.string().optional(),
+  }, async ({ name, description }) => {
+    const sessionId = opts.sessionId ?? `session-${Date.now()}`;
+    const cp = createCheckpoint(sessionId, registry, driveMode, [], name, description);
+    return { content: [{ type: "text", text: `Checkpoint created: ${cp.id}${name ? ` (${name})` : ""}` }] };
+  });
+
+  server.tool("session_restore_checkpoint", "Restore state from a checkpoint", {
+    checkpointId: z.string(),
+  }, async ({ checkpointId }) => {
+    const result = restoreCheckpoint(checkpointId, registry, driveMode);
+    return { content: [{ type: "text", text: result.ok ? `Restored checkpoint: ${checkpointId}` : `Checkpoint not found: ${checkpointId}` }] };
+  });
+
+  server.tool("session_list_checkpoints", "List all checkpoints", {
+    sessionId: z.string().optional(),
+  }, async ({ sessionId }) => {
+    const checkpoints = listCheckpoints(sessionId);
+    if (checkpoints.length === 0) return { content: [{ type: "text", text: "No checkpoints found." }] };
+    const text = checkpoints.map((cp) => {
+      const date = new Date(cp.createdAt).toLocaleString();
+      const opCount = cp.operators.filter((o) => o.status !== "completed").length;
+      return `${cp.id}  ${cp.name ?? "(unnamed)"}  ${date}  ${opCount} ops  ${cp.memory.length} memories`;
+    }).join("\n");
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("session_fork", "Fork current session (optionally from a checkpoint)", {
+    checkpointId: z.string().optional(),
+    newName: z.string().optional(),
+  }, async ({ checkpointId, newName }) => {
+    const sessionId = opts.sessionId ?? `session-${Date.now()}`;
+    try {
+      const result = forkSession(sessionId, registry, driveMode, [], checkpointId, newName);
+      return { content: [{ type: "text", text: `Forked session: ${result.newSessionId}` }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Fork failed: ${e}` }], isError: true };
+    }
+  });
+
+  server.tool("session_metadata", "Set metadata on the current session", {
+    key: z.string(),
+    value: z.string(),
+  }, async ({ key, value }) => {
+    // Store in the drive state for now
+    const { store } = await import("./store.js");
+    store.update(`session.metadata.${key}`, value);
+    return { content: [{ type: "text", text: `Metadata set: ${key} = ${value}` }] };
+  });
+
+  // ── Dream tools ──────────────────────────────────────────────────────────
+
+  server.tool("dream_trigger", "Manually trigger a dream consolidation cycle", {}, async () => {
+    if (opts.dreamDaemon) {
+      const result = opts.dreamDaemon.runOnce();
+      return { content: [{ type: "text", text: result.summary }] };
+    }
+    const { runDreamCycle } = await import("./autoDream.js");
+    const result = runDreamCycle();
+    return { content: [{ type: "text", text: result.summary }] };
+  });
+
+  server.tool("dream_status", "Get auto-dream status and last result", {}, async () => {
+    const daemon = opts.dreamDaemon;
+    const last = daemon?.getLastResult();
+    const lines: string[] = [
+      `Auto-dream: ${daemon?.isRunning() ? "running" : "stopped"}`,
+    ];
+    if (last) {
+      lines.push(`Last run: ${new Date(last.timestamp).toLocaleString()}`);
+      lines.push(`  ${last.summary}`);
+    }
+    const stats = memoryStore.stats();
+    lines.push(`Memory: ${stats.total} entries`);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  // ── Reflection gate tools ───────────────────────────────────────────────
+
+  server.tool("reflection_list", "List active self-reflection rules", {}, async () => {
+    const rules = getReflectionRules();
+    const defaults = getDefaultRules();
+    const lines = rules.map((r) => {
+      const isDefault = defaults.some((d) => d.id === r.id);
+      return `[${r.hookEvent}] ${r.id}${isDefault ? " (default)" : ""}: ${r.question.slice(0, 80)}${r.roles ? ` (roles: ${r.roles.join(",")})` : ""}`;
+    });
+    return { content: [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "No active reflection rules." }] };
+  });
+
+  server.tool("reflection_add", "Add a custom self-reflection rule", {
+    question: z.string().describe("The reflection question to inject"),
+    hookEvent: z.enum(["UserPromptSubmit", "PostToolUse", "Stop", "PreToolUse"]).describe("When to fire"),
+    roles: z.array(z.string()).optional().describe("Operator roles this applies to"),
+    toolMatcher: z.string().optional().describe("Regex for tool name (PreToolUse/PostToolUse)"),
+    tags: z.array(z.string()).optional().describe("Tags for filtering"),
+    priority: z.number().optional().describe("Lower = fires first"),
+  }, async (args) => {
+    const rule = addReflectionRule({
+      question: args.question,
+      hookEvent: args.hookEvent as ReflectionHookEvent,
+      roles: args.roles as import("./operatorRegistry.js").OperatorRole[] | undefined,
+      toolMatcher: args.toolMatcher,
+      tags: args.tags,
+      enabled: true,
+      priority: args.priority ?? 100,
+    });
+    return { content: [{ type: "text", text: `Added reflection rule: ${rule.id}` }] };
+  });
+
+  server.tool("reflection_remove", "Remove a custom reflection rule", {
+    id: z.string().describe("Rule ID to remove"),
+  }, async (args) => {
+    const removed = removeReflectionRule(args.id);
+    return { content: [{ type: "text", text: removed ? `Removed rule: ${args.id}` : `Rule not found: ${args.id}` }] };
+  });
+
+  server.tool("reflection_toggle", "Enable or disable a reflection rule", {
+    id: z.string().describe("Rule ID"),
+    enabled: z.boolean().describe("Enable or disable"),
+  }, async (args) => {
+    toggleReflectionRule(args.id, args.enabled);
+    return { content: [{ type: "text", text: `Rule ${args.id} ${args.enabled ? "enabled" : "disabled"}` }] };
+  });
+
+  // ── Evaluation harness tools ──────────────────────────────────────────
+
+  server.tool("evaluation_list", "List available eval scenarios and past results", {
+    tag: z.string().optional().describe("Filter scenarios by tag"),
+  }, async (args) => {
+    const scenarios = args.tag ? loadScenariosByTag(args.tag) : loadScenarios();
+    const results = loadResults();
+    const lines = [
+      `Scenarios: ${scenarios.length}`,
+      ...scenarios.map((s) => `  [${s.id}] ${s.name} (${s.expectedBehaviors.length} expected, ${s.forbiddenBehaviors.length} forbidden)`),
+      `\nPast results: ${results.length}`,
+      ...results.slice(0, 5).map((r) => `  [${r.suiteId}] ${new Date(r.timestamp).toLocaleString()} — pass: ${(r.passRate * 100).toFixed(1)}%, score: ${(r.averageScore * 100).toFixed(1)}%`),
+    ];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("evaluation_run", "Run evaluation suite against a prompt", {
+    prompt: z.string().describe("The prompt to evaluate"),
+    tag: z.string().optional().describe("Run only scenarios with this tag"),
+    suiteId: z.string().optional().describe("Suite ID for the result"),
+  }, async (args) => {
+    const scenarios = args.tag ? loadScenariosByTag(args.tag) : loadScenarios();
+    if (scenarios.length === 0) {
+      return { content: [{ type: "text", text: "No scenarios found. Add .json files to ~/.claude-drive/eval-scenarios/" }] };
+    }
+    const results = scenarios.map((s) => buildEvalResult(s, args.prompt, {
+      durationMs: 0, costUsd: 0, reflectionFired: [],
+    }));
+    const suite = buildSuiteResult(args.suiteId ?? `eval-${Date.now()}`, results, args.prompt);
+    saveResult(suite);
+    const lines = [
+      `Suite: ${suite.suiteId}`,
+      `Pass rate: ${(suite.passRate * 100).toFixed(1)}%`,
+      `Average score: ${(suite.averageScore * 100).toFixed(1)}%`,
+      `Scenarios: ${suite.scenarioCount}`,
+      ...results.map((r) => `  [${r.scenarioId}] ${r.passed ? "PASS" : "FAIL"} (${(r.score * 100).toFixed(1)}%)`),
+    ];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("evaluation_compare", "Compare two eval results", {
+    baselineSuiteId: z.string().describe("Baseline suite ID"),
+    currentSuiteId: z.string().describe("Current suite ID"),
+  }, async (args) => {
+    const allResults = loadResults();
+    const baseline = allResults.find((r) => r.suiteId === args.baselineSuiteId);
+    const current = allResults.find((r) => r.suiteId === args.currentSuiteId);
+    if (!baseline || !current) {
+      return { content: [{ type: "text", text: "One or both suite results not found." }] };
+    }
+    const comparison = compareResults(baseline, current);
+    return { content: [{ type: "text", text: comparison.details }] };
+  });
+
+  // ── Prompt optimizer tools ────────────────────────────────────────────
+
+  server.tool("optimizer_start", "Start autonomous prompt optimization loop", {
+    baselinePrompt: z.string().describe("Starting prompt to optimize"),
+    maxIterations: z.number().optional().describe("Max iterations (default 20)"),
+    tag: z.string().optional().describe("Eval scenario tag to use"),
+    improvementThreshold: z.number().optional().describe("Min score delta to keep (default 0.02)"),
+  }, async (args) => {
+    const scenarios = args.tag ? loadScenariosByTag(args.tag) : loadScenarios();
+    if (scenarios.length === 0) {
+      return { content: [{ type: "text", text: "No eval scenarios found. Add .json files to ~/.claude-drive/eval-scenarios/" }] };
+    }
+    const run = await startOptimization({
+      maxIterations: args.maxIterations ?? getConfig<number>("optimizer.maxIterations") ?? 20,
+      mutationOperators: ALL_MUTATION_OPERATORS,
+      baselinePrompt: args.baselinePrompt,
+      evalScenarios: scenarios,
+      improvementThreshold: args.improvementThreshold ?? getConfig<number>("optimizer.improvementThreshold") ?? 0.02,
+      checkpointEvery: getConfig<number>("optimizer.checkpointEvery") ?? 5,
+      optimizeReflectionRules: false,
+    });
+    return { content: [{ type: "text", text: `Optimization started: ${run.id}\nBaseline score: ${(run.baselineScore * 100).toFixed(1)}%` }] };
+  });
+
+  server.tool("optimizer_status", "Check optimization progress", {
+    runId: z.string().describe("Optimization run ID"),
+  }, async (args) => {
+    const run = getOptimizationStatus(args.runId);
+    if (!run) {
+      return { content: [{ type: "text", text: `Optimization run not found: ${args.runId}` }] };
+    }
+    return { content: [{ type: "text", text: getOptimizationSummary(run) }] };
+  });
+
+  server.tool("optimizer_stop", "Stop a running optimization", {
+    runId: z.string().describe("Optimization run ID to stop"),
+  }, async (args) => {
+    const stopped = stopOptimization(args.runId);
+    return { content: [{ type: "text", text: stopped ? `Stopped: ${args.runId}` : `Not found or already stopped: ${args.runId}` }] };
+  });
+
+  server.tool("optimizer_list", "List all optimization runs", {}, async () => {
+    const runs = listOptimizationRuns();
+    if (runs.length === 0) {
+      return { content: [{ type: "text", text: "No optimization runs." }] };
+    }
+    const lines = runs.map((r) =>
+      `[${r.id}] ${r.status} — iter ${r.currentIteration}/${r.config.maxIterations}, best: ${(r.bestScore * 100).toFixed(1)}%`
+    );
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("optimizer_apply", "Get the best prompt from a completed optimization", {
+    runId: z.string().describe("Optimization run ID"),
+  }, async (args) => {
+    const run = getOptimizationStatus(args.runId);
+    if (!run) {
+      return { content: [{ type: "text", text: `Optimization run not found: ${args.runId}` }] };
+    }
+    return { content: [{ type: "text", text: `Best prompt (score: ${(run.bestScore * 100).toFixed(1)}%):\n\n${run.bestPrompt}` }] };
   });
 
   return server;
@@ -542,7 +1012,7 @@ export async function startMcpServerStdio(opts: Omit<McpServerOptions, "port">):
 
 export async function startMcpServer(opts: McpServerOptions): Promise<{ port: number; close: () => void }> {
   const { port } = opts;
-  const portRange: number = (await import("./config.js")).getConfig<number>("mcp.portRange") ?? 5;
+  const portRange: number = getConfig<number>("mcp.portRange") ?? 5;
 
   const httpServer = http.createServer(async (req, res) => {
     // Health check endpoint — no session required
@@ -570,22 +1040,31 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (req.method === "POST") {
-      const id = sessionId ?? `session-${Date.now()}`;
+      const id = sessionId ?? `session-${crypto.randomUUID()}`;
       let entry = sessions.get(id);
       if (!entry) {
+        // Evict stale sessions before creating new ones; LRU fallback if still full
+        if (sessions.size >= MAX_SESSIONS) {
+          cleanupStaleSessions();
+          if (sessions.size >= MAX_SESSIONS) evictOldestSession();
+        }
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
         const server = buildMcpServer(opts);
         await server.connect(transport);
-        entry = { transport, server };
+        entry = { transport, server, lastAccess: Date.now() };
         sessions.set(id, entry);
       }
+      entry.lastAccess = Date.now();
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "GET" && sessionId) {
       const entry = sessions.get(sessionId);
       if (!entry) { res.writeHead(404); res.end(); return; }
+      entry.lastAccess = Date.now();
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "DELETE" && sessionId) {
+      const deleted = sessions.get(sessionId);
       sessions.delete(sessionId);
+      if (deleted) void deleted.transport.close().catch(() => {});
       res.writeHead(200); res.end();
     } else {
       res.writeHead(405); res.end();
@@ -620,7 +1099,12 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
 
   writePortFile(boundPort);
 
+  // Periodically clean up idle MCP sessions
+  const sessionCleanupTimer = setInterval(cleanupStaleSessions, SESSION_CLEANUP_INTERVAL_MS);
+  sessionCleanupTimer.unref(); // Don't keep process alive for cleanup
+
   const cleanup = () => {
+    clearInterval(sessionCleanupTimer);
     deletePortFile();
   };
   process.once("SIGINT", cleanup);

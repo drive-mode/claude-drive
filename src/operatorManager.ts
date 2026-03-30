@@ -3,10 +3,14 @@
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
 import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
-import type { SDKResultSuccess, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultSuccess, SDKResultError, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
+import { buildMemoryContext } from "./memoryManager.js";
+import { hookRegistry } from "./hooks.js";
+import { buildReflectionHooks, buildReflectorAgent, buildBestPracticesAgent } from "./reflectionGate.js";
+import type { ReflectionHooks } from "./reflectionGate.js";
 
 // ── Tool permission mapping ─────────────────────────────────────────────────
 
@@ -34,7 +38,12 @@ export function buildOperatorSystemPrompt(op: OperatorContext): string {
   if (op.systemHint) {
     lines.push(op.systemHint);
   }
-  if (op.memory.length > 0) {
+  // Structured memory (typed entries from memoryStore)
+  const memCtx = buildMemoryContext(op.id);
+  if (memCtx) {
+    lines.push(memCtx);
+  } else if (op.memory.length > 0) {
+    // Fallback to legacy string[] memory for backward compat
     lines.push("\nContext from memory:");
     lines.push(...op.memory.slice(-10).map((m) => `  - ${m}`));
   }
@@ -71,11 +80,22 @@ export function buildSubagentDefs(
 
 // ── Run operator ────────────────────────────────────────────────────────────
 
+export interface TaskResultStats {
+  totalCostUsd: number;
+  durationMs: number;
+  apiDurationMs: number;
+  numTurns: number;
+}
+
+export type OnTaskComplete = (op: OperatorContext, stats: TaskResultStats) => void;
+
 export interface RunOperatorOptions {
   cwd?: string;
   mcpServerUrl?: string;
   maxTurns?: number;
   allOperators?: OperatorContext[];
+  onTaskComplete?: OnTaskComplete;
+  abortSignal?: AbortSignal;
 }
 
 export async function runOperator(
@@ -93,19 +113,74 @@ export async function runOperator(
     return;
   }
 
+  // Set up abort controller for task cancellation on dismiss
+  const controller = new AbortController();
+  op.abortController = controller;
+
   const mcpPort = getConfig<number>("mcp.port") ?? 7891;
   const mcpUrl = opts.mcpServerUrl ?? `http://localhost:${mcpPort}/mcp`;
   const cwd = opts.cwd ?? op.worktreePath ?? process.cwd();
   const maxTurns = opts.maxTurns ?? 50;
   const maxBudgetUsd = getConfig<number>("operator.maxBudgetUsd");
 
-  const subagentDefs = opts.allOperators
+  // Build operator subagent definitions (peer operators)
+  const peerDefs = opts.allOperators
     ? buildSubagentDefs(opts.allOperators.filter((o) => o.id !== op.id))
     : {};
 
   const timeoutMs = getConfig<number>("operators.timeoutMs") ?? 300_000;
   const maxRetries = 3;
   const baseDelay = 1000;
+  // Build reflection hooks and subagents (AutoResearch pattern)
+  const reflectionEnabled = getConfig<boolean>("reflection.enabled") ?? true;
+  const reflectionHooks: ReflectionHooks = reflectionEnabled
+    ? buildReflectionHooks(op.role)
+    : {};
+  const reflectionAgents = reflectionEnabled
+    ? { reflector: buildReflectorAgent(), "best-practices": buildBestPracticesAgent() }
+    : {};
+
+  const subagentDefs = { ...peerDefs, ...reflectionAgents };
+
+  // Merge reflection hooks with built-in PostToolUse hooks
+  const builtinPostToolUse = [
+    {
+      matcher: "Edit|Write",
+      hooks: [
+        async (input: unknown) => {
+          const filePath = (input as { tool_input?: { file_path?: string } }).tool_input?.file_path;
+          if (filePath) logFile(op.name, filePath, "edited");
+          return {};
+        },
+      ],
+    },
+    {
+      matcher: "Bash",
+      hooks: [
+        async (input: unknown) => {
+          const cmd = (input as { tool_input?: { command?: string } }).tool_input?.command;
+          if (cmd) logActivity(op.name, `$ ${cmd.slice(0, 120)}`);
+          return {};
+        },
+      ],
+    },
+  ];
+
+  const mergedHooks = {
+    ...reflectionHooks,
+    PostToolUse: [
+      ...(reflectionHooks.PostToolUse ?? []),
+      ...builtinPostToolUse,
+    ],
+  };
+
+  // Fire TaskStart hook
+  const hookCtx = { event: "TaskStart" as const, operatorId: op.id, operatorName: op.name, timestamp: Date.now() };
+  const hookResult = await hookRegistry.execute("TaskStart", hookCtx);
+  if (hookResult.abort) {
+    logActivity(op.name, `Task aborted by hook: ${task}`);
+    return;
+  }
 
   speak(`${op.name} starting: ${task}`);
   logActivity(op.name, `Starting task: ${task}`);
@@ -177,6 +252,36 @@ export async function runOperator(
             speak(`${op.name} done.`);
           }
         }
+  const signal = opts.abortSignal ?? controller.signal;
+
+  for await (const msg of queryFn({
+    prompt: task,
+    options: {
+      cwd,
+      allowedTools: toolsForPreset(op.permissionPreset),
+      agents: subagentDefs,
+      mcpServers: {
+        "claude-drive": { type: "http" as const, url: mcpUrl },
+      },
+      systemPrompt: buildOperatorSystemPrompt(op),
+      maxTurns,
+      ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+      hooks: mergedHooks,
+    },
+  })) {
+    // Check if task was cancelled (e.g., operator dismissed)
+    if (signal?.aborted) {
+      logActivity(op.name, "Task cancelled.");
+      break;
+    }
+
+    const mAny = msg as { type?: string };
+
+    if (mAny.type === "system") {
+      const sysMsg = msg as unknown as SDKSystemMessage;
+      if (sysMsg.subtype === "init") {
+        const sid = (sysMsg as SDKSystemMessage & { session_id?: string }).session_id;
+        if (sid) op.sessionId = sid;
       }
       // Success — break out of retry loop
       clearTimeout(timer);
@@ -197,7 +302,24 @@ export async function runOperator(
       } else {
         logActivity(op.name, `Failed after ${maxRetries} attempts`);
         op.status = "completed";
+    } else if (mAny.type === "result") {
+      const resultMsg = msg as unknown as (SDKResultSuccess | SDKResultError);
+      if (!resultMsg.is_error && "result" in resultMsg && resultMsg.result !== undefined) {
+        logActivity(op.name, (resultMsg as SDKResultSuccess).result);
       }
+      // Extract cost stats from result message (both success and error have these)
+      const stats: TaskResultStats = {
+        totalCostUsd: resultMsg.total_cost_usd ?? 0,
+        durationMs: resultMsg.duration_ms ?? 0,
+        apiDurationMs: resultMsg.duration_api_ms ?? 0,
+        numTurns: resultMsg.num_turns ?? 0,
+      };
+      opts.onTaskComplete?.(op, stats);
+      // Fire TaskComplete hook
+      void hookRegistry.execute("TaskComplete", {
+        event: "TaskComplete", operatorId: op.id, operatorName: op.name, timestamp: Date.now(),
+      });
+      speak(`${op.name} done.`);
     }
   }
 }

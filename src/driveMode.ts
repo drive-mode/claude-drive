@@ -5,6 +5,7 @@
 import { EventEmitter } from "events";
 import { store } from "./store.js";
 import { getConfig } from "./config.js";
+import { hookRegistry } from "./hooks.js";
 
 export type DriveSubMode = "ask" | "agent" | "plan" | "debug" | "off";
 
@@ -13,7 +14,7 @@ export interface DriveState {
   subMode: DriveSubMode;
 }
 
-function isSubMode(value: unknown): value is DriveSubMode {
+export function isSubMode(value: unknown): value is DriveSubMode {
   return value === "plan" || value === "agent" || value === "ask" || value === "debug" || value === "off";
 }
 
@@ -40,6 +41,10 @@ export function createDriveModeManager(): DriveModeManager {
 
   function fire(): void {
     emitter.emit("change", { active: _active, subMode: _subMode });
+    // Fire ModeChange hook (non-blocking)
+    void hookRegistry.execute("ModeChange", {
+      event: "ModeChange", mode: _subMode, timestamp: Date.now(),
+    });
   }
 
   const manager: DriveModeManager = {
