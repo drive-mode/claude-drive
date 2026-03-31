@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/boot.mjs 2>&1 | tail -5"
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {
+    "claude-drive": {
+      "url": "http://localhost:7891/mcp"
+    }
+  }
+}

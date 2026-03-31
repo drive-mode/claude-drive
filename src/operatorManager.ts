@@ -2,11 +2,15 @@
  * operatorManager.ts — Agent SDK wrapper for claude-drive operators.
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
-import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
+import type { OperatorContext, PermissionPreset, OperatorCompletionResult } from "./operatorRegistry.js";
+import type { OperatorRegistry } from "./operatorRegistry.js";
 import type { SDKResultSuccess, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
+import type { CostTracker } from "./costTracker.js";
+import { runVerification, formatVerificationErrors } from "./verifier.js";
+import type { WorktreeManager } from "./worktreeManager.js";
 
 // ── Tool permission mapping ─────────────────────────────────────────────────
 
@@ -76,13 +80,21 @@ export interface RunOperatorOptions {
   mcpServerUrl?: string;
   maxTurns?: number;
   allOperators?: OperatorContext[];
+  registry?: OperatorRegistry;
+  costTracker?: CostTracker;
+  worktreeManager?: WorktreeManager;
 }
 
 export async function runOperator(
   op: OperatorContext,
   task: string,
   opts: RunOperatorOptions = {}
-): Promise<void> {
+): Promise<OperatorCompletionResult> {
+  const resolve = (result: OperatorCompletionResult): OperatorCompletionResult => {
+    opts.registry?.resolveCompletion(op.id, result);
+    return result;
+  };
+
   // Lazy import so the SDK is optional at module load time
   let queryFn: typeof import("@anthropic-ai/claude-agent-sdk").query;
   try {
@@ -90,7 +102,7 @@ export async function runOperator(
     queryFn = sdk.query;
   } catch {
     console.error("[OperatorManager] @anthropic-ai/claude-agent-sdk not installed. Run: npm install @anthropic-ai/claude-agent-sdk");
-    return;
+    return resolve({ success: false, error: "SDK not installed" });
   }
 
   const mcpPort = getConfig<number>("mcp.port") ?? 7891;
@@ -172,15 +184,84 @@ export async function runOperator(
           }
         } else if (mAny.type === "result") {
           const resultMsg = msg as unknown as SDKResultSuccess;
+          if (opts.costTracker && resultMsg.modelUsage) {
+            opts.costTracker.recordFromResult(
+              op.id,
+              op.name,
+              resultMsg.total_cost_usd ?? 0,
+              resultMsg.modelUsage as Record<string, import("./costTracker.js").ModelUsageRecord>,
+            );
+          }
           if (!resultMsg.is_error && resultMsg.result !== undefined) {
             logActivity(op.name, resultMsg.result);
             speak(`${op.name} done.`);
           }
         }
       }
-      // Success — break out of retry loop
+      // Success — break out of SDK retry loop
       clearTimeout(timer);
-      return;
+
+      // ── Verification gate ──────────────────────────────────────────────
+      const verificationRequired = getConfig<boolean>("verification.required") ?? true;
+      const verificationCommands = getConfig<string[]>("verification.commands") ?? [];
+
+      if (verificationRequired && verificationCommands.length > 0) {
+        const verifyMaxRetries = getConfig<number>("verification.maxRetries") ?? 2;
+        const worktreePath = opts.worktreeManager?.getAllocation(op.id)?.worktreePath ?? op.worktreePath ?? cwd;
+
+        for (let vAttempt = 0; vAttempt <= verifyMaxRetries; vAttempt++) {
+          op.status = "verifying";
+          logActivity(op.name, `Running verification (attempt ${vAttempt + 1}/${verifyMaxRetries + 1})...`);
+          const vResult = await runVerification(worktreePath);
+
+          if (vResult.passed) {
+            logActivity(op.name, `Verification passed in ${vResult.duration}ms`);
+            speak(`${op.name} verification passed.`);
+            return resolve({ success: true });
+          }
+
+          // Verification failed
+          const errorPrompt = formatVerificationErrors(vResult);
+          logActivity(op.name, `Verification failed (${vResult.results.filter((r) => !r.passed).length} command(s))`);
+
+          if (vAttempt >= verifyMaxRetries) {
+            logActivity(op.name, `Verification failed after ${verifyMaxRetries + 1} attempts — giving up`);
+            speak(`${op.name} verification failed.`);
+            return resolve({ success: false, error: `Verification failed:\n${errorPrompt}` });
+          }
+
+          // Re-invoke the Agent SDK with the fix prompt
+          logActivity(op.name, `Sending fix prompt to operator (retry ${vAttempt + 1}/${verifyMaxRetries})...`);
+          const fixController = new AbortController();
+          const fixTimer = setTimeout(() => fixController.abort(), timeoutMs);
+          try {
+            for await (const _msg of queryFn({
+              prompt: errorPrompt,
+              options: {
+                cwd: worktreePath,
+                allowedTools: toolsForPreset(op.permissionPreset),
+                agents: subagentDefs,
+                mcpServers: {
+                  "claude-drive": { type: "http" as const, url: mcpUrl },
+                },
+                systemPrompt: buildOperatorSystemPrompt(op),
+                maxTurns,
+                ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+                abortController: fixController,
+                ...(op.sessionId ? { sessionId: op.sessionId } : {}),
+              },
+            })) {
+              // Consume messages (logging handled by hooks in a full implementation)
+            }
+          } catch (fixErr) {
+            logActivity(op.name, `Fix attempt failed: ${fixErr}`);
+          } finally {
+            clearTimeout(fixTimer);
+          }
+        }
+      }
+
+      return resolve({ success: true });
     } catch (err) {
       clearTimeout(timer);
       const isAbort = err instanceof Error && err.name === "AbortError";
@@ -191,13 +272,16 @@ export async function runOperator(
         logActivity(op.name, `Error (attempt ${attempt}/${maxRetries}): ${err}`);
       }
       if (attempt < maxRetries) {
-        const delay = baseDelay * Math.pow(4, attempt - 1); // 1s, 4s, 16s
+        const baseBackoff = baseDelay * Math.pow(4, attempt - 1); // 1s, 4s, 16s
+        const delay = Math.round(baseBackoff * (0.75 + Math.random() * 0.5)); // ±25% jitter
         logActivity(op.name, `Retrying in ${delay}ms...`);
         await new Promise((r) => setTimeout(r, delay));
       } else {
         logActivity(op.name, `Failed after ${maxRetries} attempts`);
-        op.status = "completed";
+        return resolve({ success: false, error: `Failed after ${maxRetries} attempts` });
       }
     }
   }
+  // Should not reach here, but resolve as failure if somehow it does
+  return resolve({ success: false, error: "Unexpected exit from retry loop" });
 }

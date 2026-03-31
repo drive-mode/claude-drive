@@ -124,6 +124,11 @@ function App({ registry, driveMode, agentOutput }: TuiOptions) {
   );
 }
 
-export function startTui(opts: TuiOptions): void {
+export function startTui(opts: TuiOptions): boolean {
+  if (!process.stdin.isTTY) {
+    console.log("[claude-drive] TUI requires interactive terminal. Falling back to standard output.");
+    return false;
+  }
   render(<App {...opts} />);
+  return true;
 }

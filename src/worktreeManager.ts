@@ -10,7 +10,9 @@
  */
 
 import * as path from "path";
+import fs from "fs";
 import { GitService } from "./gitService.js";
+import { store } from "./store.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -73,6 +75,7 @@ export class WorktreeManager {
 
       const allocation: WorktreeAllocation = { operatorId, worktreePath, branchName };
       this.allocations.set(operatorId, allocation);
+      this.persist();
       return allocation;
     });
   }
@@ -92,7 +95,27 @@ export class WorktreeManager {
       await this.gitService.deleteBranch(allocation.branchName);
 
       this.allocations.delete(operatorId);
+      this.persist();
     });
+  }
+
+  private persist(): void {
+    store.update("worktrees.allocations", [...this.allocations.values()]);
+  }
+
+  restore(): void {
+    const saved = store.get<WorktreeAllocation[] | undefined>("worktrees.allocations", undefined);
+    if (!saved || !Array.isArray(saved)) return;
+    for (const alloc of saved) {
+      // Only restore allocations whose worktree path still exists on disk.
+      try {
+        if (fs.existsSync(alloc.worktreePath)) {
+          this.allocations.set(alloc.operatorId, alloc);
+        }
+      } catch {
+        // Skip allocations we can't verify.
+      }
+    }
   }
 
   /** Get the allocation for an operator (if any). */
@@ -121,6 +144,7 @@ export class WorktreeManager {
         await this.gitService.deleteBranch(allocation.branchName);
         this.allocations.delete(opId);
       }
+      if (orphaned.length > 0) this.persist();
     });
   }
 

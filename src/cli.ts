@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import dotenv from "dotenv";
+dotenv.config({ override: true });
 /**
  * cli.ts — Entry point for claude-drive CLI.
  * Usage:
@@ -64,9 +66,15 @@ program
     driveMode.setActive(true);
 
     if (opts.tui) {
-      agentOutput.setRenderMode("tui");
-      const { startTui } = await import("./tui.js");
-      startTui({ registry, driveMode, agentOutput });
+      if (!process.stdin.isTTY) {
+        console.warn("[claude-drive] --tui requires an interactive terminal; ignoring flag.");
+        console.log(`[claude-drive] Starting MCP server on port ${port}...`);
+        printStatus(true, driveMode.subMode);
+      } else {
+        agentOutput.setRenderMode("tui");
+        const { startTui } = await import("./tui.js");
+        startTui({ registry, driveMode, agentOutput });
+      }
     } else {
       console.log(`[claude-drive] Starting MCP server on port ${port}...`);
       printStatus(true, driveMode.subMode);
@@ -110,6 +118,10 @@ program
       }
     });
 
+    // Initialize cost tracker
+    const { CostTracker } = await import("./costTracker.js");
+    const costTracker = new CostTracker();
+
     // Lazy-import MCP server to keep startup fast when not needed
     const { startMcpServer } = await import("./mcpServer.js");
     const { port: boundPort } = await startMcpServer({
@@ -117,7 +129,7 @@ program
       persistentMemory, sessionMemory,
       syncCoordinator, integrationQueue,
       gitService, worktreeManager,
-      commsAgent,
+      commsAgent, costTracker,
       workspaceRoot,
     });
 
@@ -270,6 +282,33 @@ configCmd
   .description("Get a config value")
   .action((key: string) => {
     console.log(JSON.stringify(getConfig(key)));
+  });
+
+// ── governance ───────────────────────────────────────────────────────────
+
+const governanceCmd = program
+  .command("governance")
+  .description("Governance scanning and reporting");
+
+governanceCmd
+  .command("scan")
+  .description("Run a governance scan on the project")
+  .option("--root <path>", "Project root to scan", process.cwd())
+  .action(async (opts: { root: string }) => {
+    const { runGovernanceScan } = await import("./governance/index.js");
+    const result = await runGovernanceScan(opts.root);
+    console.log(JSON.stringify(result, null, 2));
+  });
+
+// ── boot ─────────────────────────────────────────────────────────────────
+
+program
+  .command("boot")
+  .description("Bootstrap environment, compile, start server, and register (idempotent)")
+  .action(async () => {
+    const { execSync: exec } = await import("child_process");
+    const bootScript = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1")), "..", "scripts", "boot.mjs");
+    exec(`node "${bootScript}"`, { stdio: "inherit", cwd: path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1")), "..") });
   });
 
 // ── port ──────────────────────────────────────────────────────────────────

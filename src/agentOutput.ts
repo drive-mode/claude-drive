@@ -4,6 +4,7 @@
  * grouped by operator name. Optionally serves an SSE stream on :7892.
  */
 import { EventEmitter } from "events";
+import { log } from "./logger.js";
 
 // ── Event types (mirrors AgentScreen event structure) ──────────────────────
 
@@ -131,16 +132,19 @@ export const agentOutput = new AgentOutputEmitter();
 /** Convenience: log an activity message. */
 export function logActivity(agent: string, text: string): void {
   agentOutput.emit("event", { type: "activity", agent, text, timestamp: Date.now() });
+  log("info", "agentOutput", `[${agent}] ${text}`);
 }
 
 /** Convenience: log a file touch. */
 export function logFile(agent: string, filePath: string, action?: string): void {
   agentOutput.emit("event", { type: "file", agent, path: filePath, action });
+  log("info", "agentOutput", `[${agent}] ${action ?? "touched"} ${filePath}`);
 }
 
 /** Convenience: log a decision. */
 export function logDecision(agent: string, text: string): void {
   agentOutput.emit("event", { type: "decision", agent, text });
+  log("info", "agentOutput", `[${agent}] decision: ${text}`);
 }
 
 /** Print Drive status line to stderr (non-blocking). */

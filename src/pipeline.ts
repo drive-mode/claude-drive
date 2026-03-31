@@ -11,6 +11,7 @@ import { sanitizePrompt } from "./sanitizer.js";
 import { getGateResult, type GateResult } from "./approvalGates.js";
 import { route, type RouteDecision } from "./router.js";
 import { getModelForMode, tierForMode, type ModelTier } from "./modelSelector.js";
+import { optimizePrompt } from "./promptOptimizer.js";
 import type { OperatorRegistry } from "./operatorRegistry.js";
 import type { SessionMemory } from "./sessionMemory.js";
 import type { PersistentMemory } from "./persistentMemory.js";
@@ -31,6 +32,7 @@ export type PipelineResult =
 
 export interface PipelineStats {
   totalPrompts: number;
+  promptOptimized: number;
   fillerCleaned: number;
   glossaryExpanded: number;
   injectionsPrevented: number;
@@ -42,6 +44,7 @@ export interface PipelineStats {
 
 const stats: PipelineStats = {
   totalPrompts: 0,
+  promptOptimized: 0,
   fillerCleaned: 0,
   glossaryExpanded: 0,
   injectionsPrevented: 0,
@@ -55,6 +58,7 @@ export function getPipelineStats(): Readonly<PipelineStats> {
 
 export function resetPipelineStats(): void {
   stats.totalPrompts = 0;
+  stats.promptOptimized = 0;
   stats.fillerCleaned = 0;
   stats.glossaryExpanded = 0;
   stats.injectionsPrevented = 0;
@@ -90,6 +94,14 @@ export async function processPipeline(
   stats.totalPrompts++;
 
   let prompt = rawPrompt;
+
+  // Stage 0: LLM prompt optimization (heavy voice cleanup)
+  const optimizeResult = await optimizePrompt(prompt);
+  if (optimizeResult.wasOptimized) {
+    stats.promptOptimized++;
+    console.log(`[pipeline] Prompt optimized: "${optimizeResult.original.slice(0, 60)}..." → "${optimizeResult.optimized.slice(0, 60)}..."`);
+    prompt = optimizeResult.optimized;
+  }
 
   // Stage 1: Filler cleaning
   const fillerResult = cleanFillerWords(prompt);

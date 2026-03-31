@@ -13,7 +13,7 @@ export type RouteMode = "plan" | "agent" | "ask" | "debug";
  * Can be overridden via config: models.<tier>
  */
 export const MODEL_TIERS: Record<ModelTier, string> = {
-  routing: "claude-3-5-haiku-20241022",
+  routing: "claude-haiku-4-5-20251001",
   planning: "claude-sonnet-4-20250514",
   execution: "claude-sonnet-4-20250514",
   reasoning: "claude-opus-4-20250514",

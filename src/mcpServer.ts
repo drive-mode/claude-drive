@@ -5,8 +5,10 @@
  */
 import http from "http";
 import fs from "fs";
+import fsp from "fs/promises";
 import path from "path";
 import os from "os";
+import { fileURLToPath } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -28,9 +30,12 @@ import { IntegrationQueue } from "./integrationQueue.js";
 import { processPipeline, getPipelineStats, type PipelineContext } from "./pipeline.js";
 import { getSteeringStats } from "./approvalGates.js";
 import { sanitizePrompt } from "./sanitizer.js";
+import { runVerification } from "./verifier.js";
 import { extractTangentNameAndTask } from "./tangentNameExtractor.js";
 import { runGovernanceScan, evaluateFocusGuard } from "./governance/index.js";
+import { switchMode } from "./modeSwitcher.js";
 import type { CommsAgent } from "./commsAgent.js";
+import type { CostTracker } from "./costTracker.js";
 
 export function getPortFilePath(): string {
   return path.join(os.homedir(), ".claude-drive", "port");
@@ -69,10 +74,14 @@ export interface McpServerOptions {
   syncCoordinator?: StateSyncCoordinator;
   integrationQueue?: IntegrationQueue;
   commsAgent?: CommsAgent;
+  costTracker?: CostTracker;
 }
 
 // Map of sessionId → { transport, server }
 const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+
+// Drain state for graceful shutdown
+let draining = false;
 
 function buildMcpServer(opts: McpServerOptions): McpServer {
   const { registry, driveMode } = opts;
@@ -128,6 +137,49 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
   }, async ({ nameOrId, entry }) => {
     registry.updateMemory(nameOrId, entry);
     return { content: [{ type: "text", text: `Memory updated for ${nameOrId}` }] };
+  });
+
+  server.tool("operator_await", "Wait for an operator to complete and return the result", {
+    name: z.string(),
+    timeoutMs: z.number().optional(),
+  }, async ({ name, timeoutMs }) => {
+    const op = registry.findByNameOrId(name);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${name}` }], isError: true };
+
+    if (registry.isCompleted(op.id)) {
+      const completed = op.status === "merged" ? "merged" : op.status;
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, status: completed }) }] };
+    }
+
+    const completionPromise = registry.awaitCompletion(op.id);
+    if (!completionPromise) {
+      return { content: [{ type: "text", text: `No completion tracker for operator: ${name}` }], isError: true };
+    }
+
+    const timeout = timeoutMs ?? 300_000;
+    const result = await Promise.race([
+      completionPromise,
+      new Promise<{ success: false; error: string }>((resolve) =>
+        setTimeout(() => resolve({ success: false, error: "timeout" }), timeout)
+      ),
+    ]);
+
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  });
+
+  server.tool("operator_verify", "Run verification commands in an operator's worktree", {
+    name: z.string(),
+  }, async ({ name }) => {
+    const op = registry.findByNameOrId(name);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${name}` }], isError: true };
+
+    const worktreePath = opts.worktreeManager?.getAllocation(op.id)?.worktreePath ?? op.worktreePath;
+    if (!worktreePath) {
+      return { content: [{ type: "text", text: `No worktree path for operator: ${name}` }], isError: true };
+    }
+
+    const result = await runVerification(worktreePath);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   });
 
   // ── Agent Screen tools ────────────────────────────────────────────────────
@@ -186,11 +238,17 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
 
   // ── Drive mode tool ───────────────────────────────────────────────────────
 
-  server.tool("drive_set_mode", "Set the drive sub-mode", {
-    mode: z.enum(["plan", "agent", "ask", "debug", "off"]),
+  server.tool("drive_set_mode", "Set the drive sub-mode (supports aliases like 'coding', 'planning', 'stop')", {
+    mode: z.string().describe("Mode name or alias: plan, agent, ask, debug, off, coding, planning, stop, etc."),
   }, async ({ mode }) => {
-    driveMode.setSubMode(mode);
-    return { content: [{ type: "text", text: `Mode set to ${mode}` }] };
+    const result = switchMode(driveMode, mode);
+    if (!result.success) {
+      return { content: [{ type: "text", text: result.error ?? "Unknown error" }], isError: true };
+    }
+    const msg = result.from === result.to
+      ? `Already in ${result.to} mode`
+      : `Mode switched: ${result.from} -> ${result.to}`;
+    return { content: [{ type: "text", text: msg }] };
   });
 
   // ── Drive run / state tools ───────────────────────────────────────────────
@@ -205,7 +263,16 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     if (!op) {
       op = registry.spawn(operatorName, task, { role, preset });
     }
-    void runOperator(op, task, { allOperators: registry.getActive() });
+    void runOperator(op, task, { allOperators: registry.getActive(), registry, costTracker: opts.costTracker }).then((result) => {
+      if (opts.commsAgent) {
+        opts.commsAgent.push({
+          type: result.success ? "completion" : "error",
+          operatorName: op.name,
+          message: result.success ? `Completed: ${task}` : `Failed: ${result.error ?? "unknown"}`,
+          timestamp: Date.now(),
+        });
+      }
+    });
     return { content: [{ type: "text", text: `Task dispatched to ${op.name}: ${task}` }] };
   });
 
@@ -530,6 +597,44 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   });
 
+  // ── Cost tracking tools ──────────────────────────────────────────────────
+
+  server.tool("cost_summary", "Get session cost summary (total cost, tokens, duration, request count)", {}, async () => {
+    if (!opts.costTracker) {
+      return { content: [{ type: "text", text: "Cost tracking not available" }], isError: true };
+    }
+    const summary = opts.costTracker.getSessionTotal();
+    const durationMin = (summary.sessionDurationMs / 60_000).toFixed(1);
+    const text = JSON.stringify({
+      totalCostUsd: `$${summary.totalCostUsd.toFixed(4)}`,
+      totalInputTokens: summary.totalInputTokens,
+      totalOutputTokens: summary.totalOutputTokens,
+      totalRequests: summary.totalRequests,
+      sessionDuration: `${durationMin} min`,
+    }, null, 2);
+    return { content: [{ type: "text", text }] };
+  });
+
+  server.tool("cost_by_operator", "Get per-operator cost breakdown (name, tokens, cost, requests)", {}, async () => {
+    if (!opts.costTracker) {
+      return { content: [{ type: "text", text: "Cost tracking not available" }], isError: true };
+    }
+    const costs = opts.costTracker.getAllCosts();
+    if (costs.length === 0) {
+      return { content: [{ type: "text", text: "No operator costs recorded yet." }] };
+    }
+    const rows = costs.map((c) => ({
+      operator: c.operatorName,
+      costUsd: `$${c.costUsd.toFixed(4)}`,
+      inputTokens: c.inputTokens,
+      outputTokens: c.outputTokens,
+      cacheReadTokens: c.cacheReadTokens,
+      cacheCreationTokens: c.cacheCreationTokens,
+      requests: c.requests,
+    }));
+    return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
+  });
+
   return server;
 }
 
@@ -548,22 +653,160 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
     // Health check endpoint — no session required
     if (req.method === "GET" && req.url === "/health") {
       const body = JSON.stringify({
-        status: "ok",
+        status: draining ? "draining" : "ok",
         uptime: process.uptime(),
         port: boundPort,
-        operators: opts.registry.getActive().length,
+        operators: opts.registry.activeCount(),
+        draining,
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
       return;
     }
 
-    // Shutdown endpoint — gracefully stop the daemon
+    // Shutdown endpoint — graceful drain then stop
     if (req.method === "POST" && req.url === "/shutdown") {
+      if (draining) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "already draining" }));
+        return;
+      }
+      draining = true;
+      const activeCount = opts.registry.activeCount();
+      console.log(`[claude-drive] Draining active operators... (${activeCount} active)`);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "shutting down" }));
-      cleanup();
-      httpServer.close(() => process.exit(0));
+      res.end(JSON.stringify({ status: "shutting down", draining: true, activeOperators: activeCount }));
+
+      if (activeCount === 0) {
+        cleanup();
+        httpServer.close(() => process.exit(0));
+        return;
+      }
+
+      const { getConfig: gc } = await import("./config.js");
+      const drainTimeoutMs: number = gc<number>("shutdown.drainTimeoutMs") ?? 30_000;
+      const pollIntervalMs = 500;
+      let elapsed = 0;
+
+      const drainInterval = setInterval(() => {
+        elapsed += pollIntervalMs;
+        const remaining = opts.registry.activeCount();
+        if (remaining === 0 || elapsed >= drainTimeoutMs) {
+          clearInterval(drainInterval);
+          if (remaining > 0) {
+            console.log(`[claude-drive] Drain timeout reached with ${remaining} operator(s) still active. Forcing shutdown.`);
+          } else {
+            console.log("[claude-drive] All operators drained. Shutting down.");
+          }
+          cleanup();
+          httpServer.close(() => process.exit(0));
+        }
+      }, pollIntervalMs);
+      return;
+    }
+
+    // CORS preflight
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, mcp-session-id",
+        "Access-Control-Max-Age": "86400",
+      });
+      res.end();
+      return;
+    }
+
+    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+    // ── GET /events — SSE stream of drive events ───────────────────────────
+    if (req.method === "GET" && parsedUrl.pathname === "/events") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+      });
+
+      // Send initial state snapshot
+      const initOperators = opts.registry.getActive().map((op) => ({
+        id: op.id, name: op.name, role: op.role, status: op.status, task: op.task,
+      }));
+      const costData = opts.costTracker?.getSessionTotal();
+      const initState = {
+        type: "init",
+        operators: initOperators,
+        mode: opts.driveMode.subMode,
+        active: opts.driveMode.active,
+        ...(costData ? {
+          totalCostUsd: costData.totalCostUsd,
+          totalInputTokens: costData.totalInputTokens,
+          totalOutputTokens: costData.totalOutputTokens,
+        } : {}),
+      };
+      res.write(`data: ${JSON.stringify(initState)}\n\n`);
+
+      // Keep connection alive
+      const heartbeat = setInterval(() => {
+        try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
+      }, 15000);
+
+      // Forward agentOutput events
+      const onEvent = (event: { type: string; agent?: string; text?: string; path?: string; action?: string }) => {
+        try {
+          const payload: Record<string, unknown> = { ...event, timestamp: Date.now() };
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        } catch { /* client gone */ }
+      };
+      agentOutput.on("event", onEvent);
+
+      // Forward operator registry changes
+      const onRegistryChange = () => {
+        try {
+          const ops = opts.registry.getActive().map((op) => ({
+            id: op.id, name: op.name, role: op.role, status: op.status, task: op.task,
+          }));
+          res.write(`data: ${JSON.stringify({ type: "operators", operators: ops })}\n\n`);
+        } catch { /* client gone */ }
+      };
+      const regDispose = opts.registry.onDidChange(onRegistryChange);
+
+      // Forward drive mode changes
+      const onModeChange = (state: { active: boolean; subMode: string }) => {
+        try {
+          res.write(`data: ${JSON.stringify({ type: "mode", active: state.active, subMode: state.subMode })}\n\n`);
+        } catch { /* client gone */ }
+      };
+      opts.driveMode.on("change", onModeChange);
+
+      req.on("close", () => {
+        clearInterval(heartbeat);
+        agentOutput.removeListener("event", onEvent);
+        regDispose.dispose();
+        opts.driveMode.off("change", onModeChange);
+      });
+      return;
+    }
+
+    // ── GET /dashboard — Serve static dashboard HTML ───────────────────────
+    if (req.method === "GET" && parsedUrl.pathname === "/dashboard") {
+      const thisDir = path.dirname(fileURLToPath(import.meta.url));
+      const htmlPath = path.join(thisDir, "..", "public", "index.html");
+      try {
+        const html = await fsp.readFile(htmlPath, "utf-8");
+        res.writeHead(200, { "Content-Type": "text/html", "Access-Control-Allow-Origin": "*" });
+        res.end(html);
+      } catch {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Dashboard not found");
+      }
+      return;
+    }
+
+    // Reject MCP tool calls while draining
+    if (draining && req.method === "POST") {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Server is shutting down" }));
       return;
     }
 
@@ -622,12 +865,16 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
 
   const cleanup = () => {
     deletePortFile();
+    if (opts.commsAgent) {
+      try { opts.commsAgent.dispose(); } catch { /* best-effort */ }
+    }
   };
   process.once("SIGINT", cleanup);
   process.once("SIGTERM", cleanup);
   process.once("exit", cleanup);
 
   console.log(`[claude-drive] MCP server listening on http://127.0.0.1:${boundPort}/mcp`);
+  console.log(`[claude-drive] Dashboard: http://127.0.0.1:${boundPort}/dashboard`);
   console.log(`[claude-drive] Port file: ${getPortFilePath()}`);
   return {
     port: boundPort,

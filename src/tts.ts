@@ -51,7 +51,8 @@ async function getSay(): Promise<SayInstance | null> {
     const mod = await import("say");
     sayModule = mod as { default?: SayInstance };
     return (mod.default ?? mod) as SayInstance;
-  } catch {
+  } catch (err) {
+    console.warn("[tts] failed to load say module:", err);
     sayModule = null;
     return null;
   }

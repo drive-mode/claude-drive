@@ -9,12 +9,7 @@
 
 Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`
 
-Keep commits atomic. Include co-author trailers when both maintainers contribute:
-
-```
-Co-Authored-By: Harrison Halperin <harrisonhalperin@gmail.com>
-Co-Authored-By: ai-secretagent <super.ai.secretagent@gmail.com>
-```
+Keep commits atomic.
 
 ## Sync with cursor-drive
 

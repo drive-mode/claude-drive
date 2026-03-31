@@ -5,6 +5,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { writeJsonAtomicSync } from "./fsUtils.js";
 import type { OperatorContext } from "./operatorRegistry.js";
 import type { DriveOutputEvent } from "./agentOutput.js";
 
@@ -26,7 +27,7 @@ function ensureDir(): void {
 export function saveSession(snapshot: SessionSnapshot): void {
   ensureDir();
   const filePath = path.join(SESSIONS_DIR, `${snapshot.id}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), "utf-8");
+  writeJsonAtomicSync(filePath, snapshot);
 }
 
 export function loadSession(id: string): SessionSnapshot | undefined {

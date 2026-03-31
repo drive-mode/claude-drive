@@ -26,7 +26,7 @@ describe("tierForMode()", () => {
 
 describe("getModelForTier()", () => {
   it("returns haiku for routing tier", () => {
-    expect(getModelForTier("routing")).toBe("claude-3-5-haiku-20241022");
+    expect(getModelForTier("routing")).toBe("claude-haiku-4-5-20251001");
   });
 
   it("returns sonnet for planning tier", () => {

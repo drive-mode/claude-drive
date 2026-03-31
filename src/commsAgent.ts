@@ -78,7 +78,7 @@ export class CommsAgent {
     const summary = await this.summarize(events);
 
     for (const handler of this.handlers) {
-      try { handler(summary); } catch { /* ignore handler errors */ }
+      try { handler(summary); } catch (err) { console.warn("[comms] flush handler error:", err); }
     }
 
     return summary;
@@ -113,9 +113,12 @@ export class CommsAgent {
    * falls back to raw formatting if unavailable.
    */
   private async summarize(events: CommsEvent[]): Promise<string> {
-    // First try AI summary
+    // First try AI summary — skip if no API key to avoid latency and errors
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return this.rawFormat(events);
+    }
     try {
-      const modelId = getConfig<string>("models.routing") ?? "claude-3-5-haiku-20241022";
+      const modelId = getConfig<string>("models.routing") ?? "claude-haiku-4-5-20251001";
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
       const client = new Anthropic();
 
@@ -140,8 +143,8 @@ export class CommsAgent {
         .join("");
 
       if (text.trim()) return text.trim();
-    } catch {
-      // Model unavailable — fall through to raw format
+    } catch (err) {
+      console.warn("[comms] summarize failed:", err);
     }
 
     // Fallback: raw event list

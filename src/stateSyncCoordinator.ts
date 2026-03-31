@@ -8,6 +8,7 @@ import { GitService, GitResult } from "./gitService.js";
 import { OperatorRegistry, OperatorContext } from "./operatorRegistry.js";
 import { WorktreeManager, WorktreeAllocation } from "./worktreeManager.js";
 import { SyncLedger } from "./syncLedger.js";
+import { store } from "./store.js";
 import type {
   SyncState,
   SyncStatusSnapshot,
@@ -134,6 +135,7 @@ export class StateSyncCoordinator {
       newProposals.push(proposal);
     }
 
+    if (newProposals.length > 0) this.persistProposals();
     return newProposals;
   }
 
@@ -179,6 +181,7 @@ export class StateSyncCoordinator {
 
     proposal.status = "approved";
     proposal.decidedAt = Date.now();
+    this.persistProposals();
 
     this.ledger.append({
       proposalId: id,
@@ -201,6 +204,7 @@ export class StateSyncCoordinator {
 
     proposal.status = "rejected";
     proposal.decidedAt = Date.now();
+    this.persistProposals();
 
     this.ledger.append({
       proposalId: id,
@@ -237,6 +241,7 @@ export class StateSyncCoordinator {
       return false;
     }
     proposal.status = "applying";
+    this.persistProposals();
     return true;
   }
 
@@ -250,6 +255,7 @@ export class StateSyncCoordinator {
     }
     proposal.status = "applied";
     proposal.appliedAt = Date.now();
+    this.persistProposals();
 
     this.ledger.append({
       proposalId: id,
@@ -271,6 +277,7 @@ export class StateSyncCoordinator {
     }
     proposal.status = "failed_apply";
     proposal.error = error;
+    this.persistProposals();
 
     this.ledger.append({
       proposalId: id,
@@ -307,5 +314,18 @@ export class StateSyncCoordinator {
   reset(): void {
     this.proposals.clear();
     this.activityLog = [];
+    this.persistProposals();
+  }
+
+  private persistProposals(): void {
+    store.update("sync.proposals", [...this.proposals.values()]);
+  }
+
+  restore(): void {
+    const saved = store.get<SyncProposal[] | undefined>("sync.proposals", undefined);
+    if (!saved || !Array.isArray(saved)) return;
+    for (const proposal of saved) {
+      this.proposals.set(proposal.id, proposal);
+    }
   }
 }

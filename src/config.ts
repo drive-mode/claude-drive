@@ -6,91 +6,52 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { validateConfig, type ClaudeDriveConfig } from "./configSchema.js";
 
 const CONFIG_FILE = path.join(os.homedir(), ".claude-drive", "config.json");
 
-// Defaults mirror cursorDrive.* settings schema
-const DEFAULTS: Record<string, unknown> = {
-  // TTS
-  "tts.enabled": true,
-  "tts.backend": "edgeTts",       // "edgeTts" | "piper" | "say"
-  "tts.voice": undefined,
-  "tts.speed": 1.0,
-  "tts.volume": 0.8,
-  "tts.maxSpokenSentences": 3,
-  "tts.interruptOnInput": true,
-  "tts.piperBinaryPath": undefined,
-  "tts.piperModelPath": undefined,
+// ── Flat ↔ nested helpers ───────────────────────────────────────────────────
 
-  // Operators
-  "operators.maxConcurrent": 3,
-  "operators.maxSubagents": 2,
-  "operators.namePool": ["Alpha", "Beta", "Gamma", "Delta", "Echo", "Foxtrot"],
-  "operators.defaultPermissionPreset": "standard",
-  "operators.timeoutMs": 300000,
+/** Flatten a nested object into dot-path keys: { a: { b: 1 } } → { "a.b": 1 } */
+function flatten(
+  obj: Record<string, unknown>,
+  prefix = "",
+  out: Record<string, unknown> = {},
+): Record<string, unknown> {
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      flatten(v as Record<string, unknown>, key, out);
+    } else {
+      out[key] = v;
+    }
+  }
+  return out;
+}
 
-  // MCP server
-  "mcp.port": 7891,
-  "mcp.portRange": 5,
-  "mcp.appsEnabled": false,
+/** Unflatten dot-path keys into a nested object: { "a.b": 1 } → { a: { b: 1 } } */
+function unflatten(flat: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(flat)) {
+    const parts = key.split(".");
+    let cur = out;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!(parts[i] in cur) || typeof cur[parts[i]] !== "object" || cur[parts[i]] === null) {
+        cur[parts[i]] = {};
+      }
+      cur = cur[parts[i]] as Record<string, unknown>;
+    }
+    cur[parts[parts.length - 1]] = value;
+  }
+  return out;
+}
 
-  // Agent screen / output
-  "agentScreen.mode": "terminal",   // "terminal" | "web"
-  "agentScreen.webPort": 7892,
+// ── Schema-derived defaults ─────────────────────────────────────────────────
 
-  // Drive
-  "drive.defaultMode": "agent",
-  "drive.confirmGates": true,
-
-  // Voice
-  "voice.enabled": false,
-  "voice.wakeWord": "hey drive",
-  "voice.sleepWord": "go to sleep",
-  "voice.whisperPath": undefined,
-
-  // Privacy
-  "privacy.persistTranscripts": false,
-
-  // Approval gates
-  "approvalGates.enabled": true,
-  "approvalGates.blockPatterns": [],
-  "approvalGates.warnPatterns": [],
-  "approvalGates.logPatterns": [],
-
-  // Router
-  "router.llmEnabled": false,
-
-  // Session Memory
-  "sessionMemory.maxEntries": 50,
-  "sessionMemory.tokenBudget": 500,
-
-  // Persistent Memory
-  "persistentMemory.retentionDays": 30,
-
-  // Sanitizer
-  "sanitizer.maxLength": 2000,
-
-  // Glossary (user-defined expansions)
-  "glossary": [],
-
-  // Model tiers
-  "models.routing": "claude-3-5-haiku-20241022",
-  "models.planning": "claude-sonnet-4-20250514",
-  "models.execution": "claude-sonnet-4-20250514",
-  "models.reasoning": "claude-opus-4-20250514",
-
-  // Tangent flow
-  "agents.tangentKeyword": "tangent",
-  "agents.tangentAutoConfirm": true,
-  "agents.tangentConfirmationTimeout": 5000,
-
-  // Operators — permission overrides per name
-  "operators.permissionOverrides": {},
-
-  // CommsAgent
-  "commsAgent.enabled": true,
-  "commsAgent.idleSeconds": 30,
-};
+/** Validated defaults from the Zod schema (flattened to dot-path keys). */
+const DEFAULTS: Record<string, unknown> = flatten(
+  validateConfig({}) as unknown as Record<string, unknown>,
+);
 
 let fileConfig: Record<string, unknown> = {};
 let runtimeFlags: Record<string, unknown> = {};
@@ -98,7 +59,12 @@ let runtimeFlags: Record<string, unknown> = {};
 function loadFile(): void {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
-      fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      // Validate: supports both flat ("tts.enabled") and nested ({ tts: { enabled } }) formats.
+      const hasDotKeys = Object.keys(raw).some((k) => k.includes("."));
+      const nested = hasDotKeys ? unflatten(raw) : raw;
+      const validated = validateConfig(nested) as unknown as Record<string, unknown>;
+      fileConfig = flatten(validated);
     }
   } catch {
     fileConfig = {};

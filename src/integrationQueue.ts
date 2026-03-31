@@ -6,6 +6,7 @@
 import { GitService } from "./gitService.js";
 import { StateSyncCoordinator } from "./stateSyncCoordinator.js";
 import { OperatorRegistry } from "./operatorRegistry.js";
+import { store } from "./store.js";
 import type { SyncProposal } from "./syncTypes.js";
 
 export interface ApplyResult {
@@ -32,6 +33,7 @@ export class IntegrationQueue {
    */
   enqueue(proposal: SyncProposal): void {
     this.queue.push(proposal);
+    this.persist();
   }
 
   /**
@@ -43,6 +45,7 @@ export class IntegrationQueue {
     if (!proposal) {
       return undefined;
     }
+    this.persist();
 
     return this.serialized(async () => {
       return this.applyProposal(proposal);
@@ -75,6 +78,17 @@ export class IntegrationQueue {
    */
   clear(): void {
     this.queue = [];
+    this.persist();
+  }
+
+  private persist(): void {
+    store.update("integrationQueue.items", this.queue.map((p) => ({ ...p })));
+  }
+
+  restore(): void {
+    const saved = store.get<SyncProposal[] | undefined>("integrationQueue.items", undefined);
+    if (!saved || !Array.isArray(saved)) return;
+    this.queue = saved;
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────

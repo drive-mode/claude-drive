@@ -1,21 +1,25 @@
 /**
  * governance/scan.ts — Orchestrates the full governance scan workflow.
- * Coordinates: projectGraph → entropy → taskLedger → artifacts.
+ * Coordinates: projectGraph -> entropy -> taskLedger -> artifacts.
  * Ported from cursor-drive for Node.js.
  */
 
 import * as fs from "fs/promises";
 import * as path from "path";
+import { writeJsonAtomic } from "../fsUtils.js";
 import { buildProjectGraphSnapshot } from "./projectGraph.js";
 import { computeEntropyReport, renderEntropyMarkdown } from "./entropy.js";
 import { generateTaskLedger, renderWorkboardMarkdown, writeTaskLedger } from "./taskLedger.js";
+import { ensureGovernanceDirs } from "./paths.js";
+import { validateScanResult } from "./schemas.js";
 import type { GovernanceScanResult } from "./types.js";
-
-const GOV_DIR = ".drive/governance";
 
 /** Run a full governance scan on the given workspace root. */
 export async function runGovernanceScan(rootDir: string): Promise<GovernanceScanResult> {
   const warnings: string[] = [];
+
+  // Ensure standard governance directory layout exists
+  const govPaths = await ensureGovernanceDirs(rootDir);
 
   // 1. Build project graph
   const snapshot = await buildProjectGraphSnapshot(rootDir);
@@ -30,20 +34,17 @@ export async function runGovernanceScan(rootDir: string): Promise<GovernanceScan
   // 3. Generate task ledger
   const ledger = generateTaskLedger(report.findings);
 
-  // 4. Write artifacts
-  const govDir = path.join(rootDir, GOV_DIR);
-  await fs.mkdir(path.join(govDir, "snapshots"), { recursive: true });
-  await fs.mkdir(path.join(govDir, "reports"), { recursive: true });
+  // 4. Write artifacts to standard directories
 
   // Snapshot JSON
-  const snapshotPath = path.join(govDir, "snapshots", "latest.json");
-  await fs.writeFile(snapshotPath, JSON.stringify(snapshot, null, 2), "utf-8");
+  const snapshotPath = path.join(govPaths.snapshots, "latest.json");
+  await writeJsonAtomic(snapshotPath, snapshot);
 
   // Entropy report (JSON + Markdown)
-  const reportJsonPath = path.join(govDir, "reports", "entropy-latest.json");
-  await fs.writeFile(reportJsonPath, JSON.stringify(report, null, 2), "utf-8");
+  const reportJsonPath = path.join(govPaths.reports, "entropy-latest.json");
+  await writeJsonAtomic(reportJsonPath, report);
 
-  const reportMdPath = path.join(govDir, "reports", "entropy-latest.md");
+  const reportMdPath = path.join(govPaths.reports, "entropy-latest.md");
   const md = renderEntropyMarkdown(report);
   await fs.writeFile(reportMdPath, md, "utf-8");
 
@@ -51,11 +52,11 @@ export async function runGovernanceScan(rootDir: string): Promise<GovernanceScan
   await writeTaskLedger(rootDir, ledger);
 
   // Workboard Markdown
-  const workboardPath = path.join(govDir, "reports", "workboard-latest.md");
+  const workboardPath = path.join(govPaths.reports, "workboard-latest.md");
   await fs.writeFile(workboardPath, renderWorkboardMarkdown(ledger), "utf-8");
 
   // Append to NDJSON history
-  const historyPath = path.join(govDir, "history.ndjson");
+  const historyPath = path.join(govPaths.history, "scan.ndjson");
   const historyLine = JSON.stringify({
     score: report.score,
     findingCount: report.findings.length,
@@ -64,10 +65,13 @@ export async function runGovernanceScan(rootDir: string): Promise<GovernanceScan
   });
   await fs.appendFile(historyPath, historyLine + "\n", "utf-8");
 
-  return {
+  const result: GovernanceScanResult = {
     entropyScore: report.score,
     taskCount: ledger.tasks.length,
     warnings,
     reportPath: reportMdPath,
   };
+
+  // Validate before returning
+  return validateScanResult(result);
 }

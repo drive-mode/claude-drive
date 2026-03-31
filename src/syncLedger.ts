@@ -5,6 +5,7 @@
 
 import * as fs from "fs/promises";
 import * as path from "path";
+import { writeJsonAtomic } from "./fsUtils.js";
 
 export interface LedgerEntry {
   proposalId: string;
@@ -35,7 +36,7 @@ export class SyncLedger {
     entries.push(entry);
 
     try {
-      await fs.writeFile(this.ledgerPath, JSON.stringify(entries, null, 2), "utf-8");
+      await writeJsonAtomic(this.ledgerPath, entries);
     } catch (error) {
       console.error("[SyncLedger] Failed to append entry:", error);
       throw error;

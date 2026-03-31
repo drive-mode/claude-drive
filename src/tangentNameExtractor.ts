@@ -49,7 +49,7 @@ async function extractViaModel(textAfterTangent: string): Promise<TangentParseRe
 
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 100,
       messages: [
         {
@@ -71,10 +71,12 @@ async function extractViaModel(textAfterTangent: string): Promise<TangentParseRe
       const name = parsed.name && String(parsed.name).trim() ? String(parsed.name).trim() : undefined;
       const task = parsed.task && String(parsed.task).trim() ? String(parsed.task).trim() : textAfterTangent.trim();
       return { name, task };
-    } catch {
+    } catch (err) {
+      console.warn("[tangent] name extraction failed (JSON parse):", err);
       return { task: textAfterTangent.trim() };
     }
-  } catch {
+  } catch (err) {
+    console.warn("[tangent] name extraction failed:", err);
     return { task: textAfterTangent.trim() };
   }
 }

@@ -6,6 +6,7 @@
 
 import * as fs from "fs/promises";
 import * as path from "path";
+import { writeJsonAtomic } from "../fsUtils.js";
 import type {
   Finding,
   Task,
@@ -138,6 +139,6 @@ export async function writeTaskLedger(
   const dir = path.join(rootDir, LEDGER_DIR);
   await fs.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, "latest.json");
-  await fs.writeFile(filePath, JSON.stringify(ledger, null, 2), "utf-8");
+  await writeJsonAtomic(filePath, ledger);
   return filePath;
 }

@@ -5,10 +5,11 @@
  */
 import { EventEmitter } from "events";
 import { getConfig } from "./config.js";
+import { store } from "./store.js";
 
 type SyncState = "idle" | "syncing" | "conflict" | "applying" | "error";
 
-export type OperatorStatus = "active" | "background" | "completed" | "merged" | "paused";
+export type OperatorStatus = "active" | "background" | "completed" | "merged" | "paused" | "verifying";
 export type OperatorRole = "implementer" | "reviewer" | "tester" | "researcher" | "planner";
 
 export interface RoleTemplate {
@@ -100,11 +101,23 @@ function getNamePool(): string[] {
     : FALLBACK_NAMES;
 }
 
+export interface OperatorCompletionResult {
+  success: boolean;
+  error?: string;
+}
+
+interface OperatorCompletion {
+  promise: Promise<OperatorCompletionResult>;
+  resolve: (result: OperatorCompletionResult) => void;
+  resolved: boolean;
+}
+
 type RegistryListener = () => void;
 
 export class OperatorRegistry {
   private operators: Map<string, OperatorContext> = new Map();
   private nameToId: Map<string, string> = new Map();
+  private completions: Map<string, OperatorCompletion> = new Map();
   private foregroundId: string | undefined;
   private listeners: Set<RegistryListener> = new Set();
   readonly events = new EventEmitter();
@@ -116,6 +129,27 @@ export class OperatorRegistry {
 
   private emitChange(): void {
     for (const listener of this.listeners) listener();
+    this.persist();
+  }
+
+  private persist(): void {
+    const data = [...this.operators.values()].map((op) => ({ ...op }));
+    store.update("registry.operators", { operators: data, foregroundId: this.foregroundId });
+  }
+
+  restore(): void {
+    const saved = store.get<{ operators: OperatorContext[]; foregroundId?: string } | undefined>(
+      "registry.operators",
+      undefined
+    );
+    if (!saved || !Array.isArray(saved.operators)) return;
+    for (const op of saved.operators) {
+      this.operators.set(op.id, op);
+      this.nameToId.set(op.name.toLowerCase(), op.id);
+    }
+    if (saved.foregroundId && this.operators.has(saved.foregroundId)) {
+      this.foregroundId = saved.foregroundId;
+    }
   }
 
   spawn(name?: string, task = "", options?: SpawnOptions): OperatorContext {
@@ -150,6 +184,11 @@ export class OperatorRegistry {
     };
     this.operators.set(id, op);
     this.nameToId.set(resolvedName.toLowerCase(), id);
+
+    // Create completion tracker for this operator
+    let resolver!: OperatorCompletion["resolve"];
+    const promise = new Promise<OperatorCompletionResult>((r) => { resolver = r; });
+    this.completions.set(id, { promise, resolve: resolver, resolved: false });
 
     if (!this.foregroundId) {
       this.foregroundId = id;
@@ -344,6 +383,29 @@ export class OperatorRegistry {
     if (state.syncState !== undefined) op.syncState = state.syncState;
     this.emitChange();
     return true;
+  }
+
+  resolveCompletion(operatorId: string, result: OperatorCompletionResult): void {
+    const completion = this.completions.get(operatorId);
+    if (!completion || completion.resolved) return;
+    completion.resolved = true;
+    completion.resolve(result);
+
+    const op = this.operators.get(operatorId);
+    if (op && op.status !== "merged") {
+      op.status = result.success ? "completed" : "completed";
+      if (this.foregroundId === op.id) this.foregroundId = this.pickNextForeground(op.id);
+      this.events.emit("operatorCompleted", op.id, result.success ? "done" : `failed: ${result.error ?? "unknown"}`);
+      this.emitChange();
+    }
+  }
+
+  awaitCompletion(operatorId: string): Promise<OperatorCompletionResult> | undefined {
+    return this.completions.get(operatorId)?.promise;
+  }
+
+  isCompleted(operatorId: string): boolean {
+    return this.completions.get(operatorId)?.resolved ?? false;
   }
 
   static getRoleTemplate(role: OperatorRole): RoleTemplate { return ROLE_TEMPLATES[role]; }

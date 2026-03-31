@@ -44,8 +44,8 @@ export function resumeSession(id: string, registry: OperatorRegistry, driveMode:
         parentId: op.parentId,
         depth: op.depth,
       });
-    } catch {
-      // Skip operators that fail to restore
+    } catch (err) {
+      console.warn("[session] operator restore failed:", op.name, err);
     }
   }
 
