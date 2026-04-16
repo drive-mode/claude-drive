@@ -1,143 +1,50 @@
 /**
  * operatorRegistry.ts — Operator lifecycle manager for claude-drive.
- * Adapted from cursor-drive: replaced vscode.workspace.getConfiguration → getConfig().
- * All other logic is unchanged.
+ *
+ * Types and role templates live in `registry/types.ts` and `registry/roles.ts`.
+ * This file owns the `OperatorRegistry` class — the mutable state + behaviour
+ * — plus the internal name-pool helper. Other modules import types from
+ * `./operatorRegistry.js` as before; the split is purely internal.
  */
 import { EventEmitter } from "events";
 import { getConfig } from "./config.js";
 import { hookRegistry } from "./hooks.js";
 import { logger } from "./logger.js";
+import { ROLE_TEMPLATES, minPreset } from "./registry/roles.js";
+import type {
+  ContextUsage,
+  EscalationEvent,
+  ExecutionMode,
+  OperatorContext,
+  OperatorRole,
+  OperatorStats,
+  OperatorStatus,
+  OperatorTreeNode,
+  OperatorVisibility,
+  PermissionPreset,
+  SpawnOptions,
+  SyncState,
+} from "./registry/types.js";
+import type { RoleTemplate } from "./registry/roles.js";
 
-type SyncState = "idle" | "syncing" | "conflict" | "applying" | "error";
-
-export type OperatorStatus = "active" | "background" | "completed" | "merged" | "paused";
-export type OperatorRole = "implementer" | "reviewer" | "tester" | "researcher" | "planner";
-
-/** Claude Agent SDK effort level: `low | medium | high | xhigh | max`. */
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
-
-/** Whether an operator runs in the calling turn (foreground) or detached (background). */
-export type ExecutionMode = "foreground" | "background";
-
-/** Per-category + total context window usage reported by the SDK. */
-export interface ContextUsage {
-  total: number;
-  maxTokens?: number;
-  percentage?: number;
-  byCategory: Record<string, number>;
-  updatedAt: number;
-}
-
-export interface RoleTemplate {
-  defaultPreset: PermissionPreset;
-  description: string;
-  systemHint: string;
-}
-
-export const ROLE_TEMPLATES: Record<OperatorRole, RoleTemplate> = {
-  implementer: {
-    defaultPreset: "standard",
-    description: "Writes and modifies code",
-    systemHint: "You are an implementer. Write production-quality code, follow existing patterns, and report files touched via agent_screen_file.",
-  },
-  reviewer: {
-    defaultPreset: "readonly",
-    description: "Reviews code without modifying files",
-    systemHint: "You are a reviewer. Analyze code for bugs, risks, and quality. Do NOT edit files. Report findings via agent_screen_decision.",
-  },
-  tester: {
-    defaultPreset: "standard",
-    description: "Writes and runs tests",
-    systemHint: "You are a tester. Write test cases, run test suites, and verify behavior. Report test results via agent_screen_activity.",
-  },
-  researcher: {
-    defaultPreset: "readonly",
-    description: "Researches solutions and gathers context",
-    systemHint: "You are a researcher. Explore the codebase, read documentation, and synthesize findings. Do NOT edit production files.",
-  },
-  planner: {
-    defaultPreset: "readonly",
-    description: "Creates plans and breaks down tasks",
-    systemHint: "You are a planner. Analyze requirements, break tasks into actionable steps, and produce plan artifacts. Do NOT implement code.",
-  },
-};
-
-export interface EscalationEvent {
-  operatorId: string;
-  operatorName: string;
-  reason: string;
-  severity: "info" | "warning" | "critical";
-  timestamp: number;
-}
-
-export type OperatorVisibility = "isolated" | "shared" | "collaborative";
-export type PermissionPreset = "readonly" | "standard" | "full";
-
-const PRESET_ORDER: PermissionPreset[] = ["readonly", "standard", "full"];
-
-export function minPreset(a: PermissionPreset, b: PermissionPreset): PermissionPreset {
-  return PRESET_ORDER.indexOf(a) <= PRESET_ORDER.indexOf(b) ? a : b;
-}
-
-export interface OperatorStats {
-  totalCostUsd: number;
-  totalDurationMs: number;
-  totalApiDurationMs: number;
-  totalTurns: number;
-  taskCount: number;        // number of tasks completed
-}
-
-export interface OperatorContext {
-  id: string;
-  name: string;
-  voice: string | undefined;
-  task: string;
-  status: OperatorStatus;
-  createdAt: number;
-  memory: string[];
-  visibility: OperatorVisibility;
-  depth: number;
-  parentId?: string;
-  permissionPreset: PermissionPreset;
-  role?: OperatorRole;
-  systemHint?: string;
-  worktreePath?: string;
-  branchName?: string;
-  baseCommit?: string;
-  headCommit?: string;
-  syncState?: SyncState;
-  sessionId?: string;
-  stats: OperatorStats;
-  /** Controller to cancel in-flight tasks when operator is dismissed. */
-  abortController?: AbortController;
-  /** Whether the operator blocks its caller (foreground) or runs detached (background). */
-  executionMode: ExecutionMode;
-  /** In-flight task promise (set by operatorManager.runOperator). */
-  runPromise?: Promise<void>;
-  /** Absolute path to this operator's progress directory (set for background runs). */
-  progressPath?: string;
-  /** Most recent context-usage snapshot. */
-  contextUsage?: ContextUsage;
-  /** Effort/thinking level passthrough for SDK `query()`. */
-  effort?: EffortLevel;
-  /** Agent-definition name that spawned this operator, if any. */
-  agentDefinitionName?: string;
-}
-
-export interface OperatorTreeNode {
-  op: OperatorContext;
-  children: OperatorTreeNode[];
-}
-
-export interface SpawnOptions {
-  preset?: PermissionPreset;
-  parentId?: string;
-  depth?: number;
-  role?: OperatorRole;
-  executionMode?: ExecutionMode;
-  effort?: EffortLevel;
-  agentDefinitionName?: string;
-}
+// Re-export everything so existing import paths keep working.
+export type {
+  ContextUsage,
+  EffortLevel,
+  EscalationEvent,
+  ExecutionMode,
+  OperatorContext,
+  OperatorRole,
+  OperatorStats,
+  OperatorStatus,
+  OperatorTreeNode,
+  OperatorVisibility,
+  PermissionPreset,
+  SpawnOptions,
+  SyncState,
+} from "./registry/types.js";
+export { ROLE_TEMPLATES, minPreset } from "./registry/roles.js";
+export type { RoleTemplate } from "./registry/roles.js";
 
 function getNamePool(): string[] {
   const pool = getConfig<string[]>("operators.namePool");
