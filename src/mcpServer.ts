@@ -6,7 +6,7 @@
 import http from "http";
 import fs from "fs";
 import path from "path";
-import os from "os";
+import { portFile } from "./paths.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -40,7 +40,7 @@ import {
 import { AutoDreamDaemon } from "./autoDream.js";
 
 export function getPortFilePath(): string {
-  return path.join(os.homedir(), ".claude-drive", "port");
+  return portFile();
 }
 
 export function readPortFile(): number | undefined {

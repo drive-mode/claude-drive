@@ -13,9 +13,9 @@
  */
 import fs from "fs";
 import path from "path";
-import os from "os";
 import { getConfig } from "./config.js";
 import { parseFrontmatter } from "./frontmatter.js";
+import { agentsDir, expandUserHome } from "./paths.js";
 import type { EffortLevel, OperatorRole, PermissionPreset } from "./operatorRegistry.js";
 
 export type AgentDefinitionScope = "builtin" | "user" | "project";
@@ -136,13 +136,6 @@ export interface LoadOptions {
   userDir?: string;
 }
 
-function expandHome(p: string): string {
-  if (!p) return p;
-  if (p === "~") return os.homedir();
-  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
-
 export function loadAgentDefinitions(
   scopes: AgentDefinitionScope[] = ["builtin", "user", "project"],
   opts: LoadOptions = {},
@@ -153,7 +146,8 @@ export function loadAgentDefinitions(
     const defs: AgentDefinition[] = (() => {
       if (scope === "builtin") return [...BUILTIN_DEFS.values()];
       if (scope === "user") {
-        const dir = expandHome(opts.userDir ?? getConfig<string>("agents.directory") ?? "~/.claude-drive/agents");
+        const override = opts.userDir ?? getConfig<string>("agents.directory");
+        const dir = override ? expandUserHome(override) : agentsDir();
         return readDefsFromDir(dir, "user");
       }
       if (scope === "project") {

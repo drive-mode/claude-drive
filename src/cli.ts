@@ -73,11 +73,13 @@ program
     }
 
     // Initialize hooks, skills, and auto-dream
-    import("os").then(({ default: os }) => {
-      const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
-      hookRegistry.loadFromDirectory(hooksDir);
+    {
+      const { hooksDir: defaultHooksDir, expandUserHome } = await import("./paths.js");
+      const configured = getConfig<string>("hooks.directory");
+      const dir = configured ? expandUserHome(configured) : defaultHooksDir();
+      hookRegistry.loadFromDirectory(dir);
       hookRegistry.loadFromConfig();
-    });
+    }
     loadDefaultSkills();
     const dreamDaemon = new AutoDreamDaemon();
     dreamDaemon.start();

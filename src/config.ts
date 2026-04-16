@@ -4,11 +4,8 @@
  * Replaces vscode.workspace.getConfiguration("cursorDrive.*")
  */
 import fs from "fs";
-import path from "path";
-import os from "os";
 import { atomicWriteJSON } from "./atomicWrite.js";
-
-const CONFIG_FILE = path.join(os.homedir(), ".claude-drive", "config.json");
+import { configFile } from "./paths.js";
 
 // Defaults mirror cursorDrive.* settings schema
 const DEFAULTS: Record<string, unknown> = {
@@ -124,8 +121,9 @@ let runtimeFlags: Record<string, unknown> = {};
 
 function loadFile(): void {
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+    const p = configFile();
+    if (fs.existsSync(p)) {
+      fileConfig = JSON.parse(fs.readFileSync(p, "utf-8"));
     }
   } catch {
     fileConfig = {};
@@ -158,7 +156,7 @@ export function saveConfig(key: string, value: unknown): void {
   loadFile();
   fileConfig[key] = value;
   try {
-    atomicWriteJSON(CONFIG_FILE, fileConfig);
+    atomicWriteJSON(configFile(), fileConfig);
   } catch (e) {
     console.error("[config] Failed to save:", e);
   }

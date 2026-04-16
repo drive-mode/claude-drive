@@ -9,8 +9,8 @@
  */
 import fs from "fs";
 import path from "path";
-import os from "os";
 import { atomicWriteJSON } from "./atomicWrite.js";
+import { subagentsBaseDir } from "./paths.js";
 
 export interface ProgressEvent {
   /** Event kind. */
@@ -24,7 +24,7 @@ export interface ProgressEvent {
 }
 
 export function defaultBaseDir(): string {
-  return path.join(os.homedir(), ".claude-drive", "subagents");
+  return subagentsBaseDir();
 }
 
 export function progressDir(operatorId: string, baseDir?: string): string {

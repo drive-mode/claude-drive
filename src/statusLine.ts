@@ -7,12 +7,14 @@ import path from "path";
 import os from "os";
 import { getConfig } from "./config.js";
 import { getStatusFilePath } from "./statusFile.js";
+import { statuslineScriptPath } from "./paths.js";
 
-const SCRIPT_PATH = path.join(os.homedir(), ".claude-drive", "statusline.sh");
+// `~/.claude/settings.json` is owned by Claude Code, not claude-drive, so it
+// is not part of paths.ts.
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 
 export function getScriptPath(): string {
-  return SCRIPT_PATH;
+  return statuslineScriptPath();
 }
 
 /** Generate the bash status line script content. */
@@ -107,22 +109,22 @@ function bashEscape(s: string): string {
 /** Install the status line script and patch ~/.claude/settings.json. */
 export function installStatusLine(): { scriptPath: string; settingsPatched: boolean } {
   // 1. Write the script
-  const scriptDir = path.dirname(SCRIPT_PATH);
-  fs.mkdirSync(scriptDir, { recursive: true });
-  fs.writeFileSync(SCRIPT_PATH, generateStatusLineScript(), "utf-8");
-  fs.chmodSync(SCRIPT_PATH, 0o755);
+  const scriptPath = statuslineScriptPath();
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.writeFileSync(scriptPath, generateStatusLineScript(), "utf-8");
+  fs.chmodSync(scriptPath, 0o755);
 
   // 2. Patch Claude settings
-  const settingsPatched = patchClaudeSettings(SCRIPT_PATH);
+  const settingsPatched = patchClaudeSettings(scriptPath);
 
-  return { scriptPath: SCRIPT_PATH, settingsPatched };
+  return { scriptPath, settingsPatched };
 }
 
 /** Remove the status line script and unpatch ~/.claude/settings.json. */
 export function uninstallStatusLine(): { scriptRemoved: boolean; settingsPatched: boolean } {
   let scriptRemoved = false;
   try {
-    fs.unlinkSync(SCRIPT_PATH);
+    fs.unlinkSync(statuslineScriptPath());
     scriptRemoved = true;
   } catch {
     /* already gone */

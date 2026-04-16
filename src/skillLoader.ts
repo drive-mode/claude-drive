@@ -4,8 +4,8 @@
  */
 import fs from "fs";
 import path from "path";
-import os from "os";
 import { getConfig } from "./config.js";
+import { skillsDir, expandUserHome } from "./paths.js";
 import type { OperatorRole, PermissionPreset } from "./operatorRegistry.js";
 import { parseFrontmatter, resolveTemplate as _resolveTemplate } from "./frontmatter.js";
 
@@ -125,8 +125,7 @@ export const skillRegistry = new SkillRegistry();
 
 /** Load skills from the default directory. */
 export function loadDefaultSkills(): void {
-  const dir = getConfig<string>("skills.directory")
-    ?? path.join(os.homedir(), ".claude-drive", "skills");
-  const expanded = dir.replace(/^~/, os.homedir());
-  skillRegistry.loadFromDirectory(expanded);
+  const configured = getConfig<string>("skills.directory");
+  const dir = configured ? expandUserHome(configured) : skillsDir();
+  skillRegistry.loadFromDirectory(dir);
 }
