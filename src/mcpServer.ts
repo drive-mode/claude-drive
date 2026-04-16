@@ -18,6 +18,13 @@ import { logActivity, logFile, logDecision, agentOutput } from "./agentOutput.js
 import { speak, stop as ttsStop } from "./tts.js";
 import { runOperator } from "./operatorManager.js";
 import type { OnTaskComplete } from "./operatorManager.js";
+import { readProgressSnapshot } from "./progressFile.js";
+import { runBestOfN } from "./bestOfN.js";
+import {
+  loadAgentDefinitions,
+  getAgentDefinition,
+  applyAgentDefinition,
+} from "./agentDefinitionLoader.js";
 import { listPendingApprovals, respondToApproval } from "./approvalQueue.js";
 import type { WorktreeManager } from "./worktreeManager.js";
 import type { GitService } from "./gitService.js";
@@ -197,7 +204,12 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
     operatorName: z.string().optional(),
     role: z.enum(["implementer", "reviewer", "tester", "researcher", "planner"]).optional(),
     preset: z.enum(["readonly", "standard", "full"]).optional(),
-  }, async ({ task, operatorName, role, preset }) => {
+    background: z.boolean().optional(),
+    taskBudget: z.number().optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    parentId: z.string().optional(),
+    agent: z.string().optional(),
+  }, async ({ task, operatorName, role, preset, background, taskBudget, effort, parentId, agent }) => {
     // Enforce maxConcurrent limit
     const maxConcurrent = getConfig<number>("operators.maxConcurrent") ?? 3;
     const activeCount = registry.getActive().filter((o) => o.status === "active" || o.status === "background").length;
@@ -205,13 +217,156 @@ function buildMcpServer(opts: McpServerOptions): McpServer {
       return { content: [{ type: "text", text: `Cannot dispatch: ${activeCount} operators active (max ${maxConcurrent}). Dismiss an operator first.` }], isError: true };
     }
 
+    // Apply agent definition (if agent name matches a def, fill defaults).
+    const merged = applyAgentDefinition<{
+      role?: typeof role;
+      preset?: typeof preset;
+      effort?: typeof effort;
+      executionMode?: "foreground" | "background";
+      agentDefinitionName?: string;
+    }>(agent ?? operatorName, {
+      role,
+      preset,
+      effort,
+      executionMode: background ? ("background" as const) : undefined,
+    });
+
     let op = operatorName ? registry.findByNameOrId(operatorName) : registry.getForeground();
     if (!op) {
-      op = registry.spawn(operatorName, task, { role, preset });
+      op = registry.spawn(operatorName ?? agent, task, {
+        role: merged.options.role,
+        preset: merged.options.preset,
+        effort: merged.options.effort,
+        executionMode: merged.options.executionMode,
+        parentId,
+        agentDefinitionName: merged.options.agentDefinitionName,
+      });
     }
-    runOperator(op, task, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete })
-      .catch((e) => console.error(`[drive_run_task] Error in operator ${op!.name}:`, e));
-    return { content: [{ type: "text", text: `Task dispatched to ${op.name}: ${task}` }] };
+    const isBackground = (background ?? (merged.options.executionMode === "background")) === true;
+    runOperator(op, task, {
+      allOperators: registry.getActive(),
+      onTaskComplete: opts.onTaskComplete,
+      registry,
+      isBackground,
+      taskBudget,
+      effort: merged.options.effort,
+    }).catch((e) => console.error(`[drive_run_task] Error in operator ${op!.name}:`, e));
+    return { content: [{ type: "text", text: `Task ${isBackground ? "dispatched (background)" : "dispatched"} to ${op.name}: ${task}` }] };
+  });
+
+  server.tool("operator_get_progress", "Read the latest background progress snapshot for an operator", {
+    nameOrId: z.string(),
+  }, async ({ nameOrId }) => {
+    const op = registry.findByNameOrId(nameOrId);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${nameOrId}` }], isError: true };
+    const snap = readProgressSnapshot(op.id);
+    return { content: [{ type: "text", text: JSON.stringify(snap, null, 2) }] };
+  });
+
+  server.tool("operator_await", "Block until an operator's in-flight run completes", {
+    nameOrId: z.string(),
+    timeoutMs: z.number().optional(),
+  }, async ({ nameOrId, timeoutMs }) => {
+    const op = registry.findByNameOrId(nameOrId);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${nameOrId}` }], isError: true };
+    const timeout = timeoutMs ?? getConfig<number>("operator.awaitTimeoutMs") ?? 300000;
+
+    let timedOut = false;
+    const timer = new Promise<"timeout">((resolve) => {
+      setTimeout(() => { timedOut = true; resolve("timeout"); }, timeout);
+    });
+
+    // Prefer the in-flight run promise if we have it.
+    if (op.runPromise) {
+      const outcome = await Promise.race([
+        op.runPromise.then(() => "done" as const).catch(() => "done" as const),
+        timer,
+      ]);
+      if (outcome === "timeout") {
+        return { content: [{ type: "text", text: `Timed out after ${timeout}ms waiting for ${op.name}` }], isError: true };
+      }
+    } else {
+      // Fallback: poll status.
+      while (op.status !== "completed" && op.status !== "merged") {
+        if (timedOut) {
+          return { content: [{ type: "text", text: `Timed out after ${timeout}ms waiting for ${op.name}` }], isError: true };
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+
+    const snap = readProgressSnapshot(op.id);
+    const payload = { status: op.status, stats: op.stats, lastProgress: snap.last };
+    return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+  });
+
+  server.tool("operator_context_usage", "Get cached context-window usage for an operator", {
+    nameOrId: z.string(),
+  }, async ({ nameOrId }) => {
+    const op = registry.findByNameOrId(nameOrId);
+    if (!op) return { content: [{ type: "text", text: `Operator not found: ${nameOrId}` }], isError: true };
+    if (!op.contextUsage) return { content: [{ type: "text", text: `No context usage recorded for ${op.name}.` }] };
+    return { content: [{ type: "text", text: JSON.stringify(op.contextUsage, null, 2) }] };
+  });
+
+  server.tool("operator_tree", "Return the operator hierarchy as JSON", {
+    rootNameOrId: z.string().optional(),
+  }, async ({ rootNameOrId }) => {
+    const tree = registry.getTree(rootNameOrId);
+    // Flatten to a serializable form.
+    const serialize = (nodes: Array<{ op: { id: string; name: string; status: string; role?: string; depth: number; permissionPreset: string; executionMode?: string; agentDefinitionName?: string }; children: unknown[] }>): unknown =>
+      nodes.map((n) => ({
+        id: n.op.id,
+        name: n.op.name,
+        status: n.op.status,
+        role: n.op.role,
+        depth: n.op.depth,
+        preset: n.op.permissionPreset,
+        executionMode: n.op.executionMode,
+        agentDefinitionName: n.op.agentDefinitionName,
+        children: serialize(n.children as Array<{ op: never; children: unknown[] }>),
+      }));
+    return { content: [{ type: "text", text: JSON.stringify(serialize(tree as Parameters<typeof serialize>[0]), null, 2) }] };
+  });
+
+  server.tool("agent_list", "List configured agent definitions (builtin + user + project)", {}, async () => {
+    const defs = loadAgentDefinitions();
+    if (defs.length === 0) return { content: [{ type: "text", text: "No agent definitions." }] };
+    const lines = defs.map((d) =>
+      `${d.name} [${d.scope ?? "user"}] — ${d.description}${d.role ? ` role=${d.role}` : ""}${d.preset ? ` preset=${d.preset}` : ""}${d.background ? " background" : ""}`
+    );
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  });
+
+  server.tool("agent_inspect", "Show a single resolved agent definition", {
+    name: z.string(),
+  }, async ({ name }) => {
+    const def = getAgentDefinition(name);
+    if (!def) return { content: [{ type: "text", text: `Agent not found: ${name}` }], isError: true };
+    return { content: [{ type: "text", text: JSON.stringify(def, null, 2) }] };
+  });
+
+  server.tool("drive_best_of_n", "Spawn N operators in parallel and pick the best result", {
+    task: z.string(),
+    count: z.number().optional(),
+    models: z.array(z.string()).optional(),
+    role: z.enum(["implementer", "reviewer", "tester", "researcher", "planner"]).optional(),
+    preset: z.enum(["readonly", "standard", "full"]).optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  }, async ({ task, count, models, role, preset, effort }) => {
+    try {
+      const result = await runBestOfN(task, registry, { count, models, role, preset, effort });
+      const summary = result.all.map((r, i) => {
+        const winner = i === result.winnerIndex ? " ★" : "";
+        const stats = r.stats ? ` cost=$${r.stats.totalCostUsd.toFixed(4)} turns=${r.stats.numTurns}` : "";
+        const err = r.error ? ` error="${r.error}"` : "";
+        const summaryTxt = r.lastSummary ? ` summary="${r.lastSummary}"` : "";
+        return `#${i + 1}${winner} ${r.op.name} success=${r.success}${stats}${err}${summaryTxt}`;
+      }).join("\n");
+      return { content: [{ type: "text", text: summary }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `best-of-N failed: ${e instanceof Error ? e.message : e}` }], isError: true };
+    }
   });
 
   server.tool("drive_get_state", "Get full Drive state snapshot", {}, async () => {

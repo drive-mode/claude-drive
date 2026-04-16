@@ -26,6 +26,11 @@ import { hookRegistry } from "./hooks.js";
 import { skillRegistry, loadDefaultSkills } from "./skillLoader.js";
 import { AutoDreamDaemon } from "./autoDream.js";
 import { memoryStore } from "./memoryStore.js";
+import { loadAgentDefinitions, getAgentDefinition } from "./agentDefinitionLoader.js";
+import { registerBuiltins } from "./builtinAgents.js";
+
+// Register built-in agent definitions up-front so every command can see them.
+registerBuiltins();
 
 const planCostTracker = new PlanCostTracker();
 
@@ -386,6 +391,35 @@ skillCmd
     if (!skill) { console.error(`[claude-drive] Skill not found: ${name}`); return; }
     console.log(`--- ${skill.name} ---`);
     console.log(skill.prompt);
+  });
+
+// ── agent ─────────────────────────────────────────────────────────────────
+
+const agentCmd = program.command("agent").description("Manage agent definitions");
+
+agentCmd
+  .command("list")
+  .description("List all agent definitions (builtin + user + project)")
+  .action(() => {
+    const defs = loadAgentDefinitions();
+    if (defs.length === 0) { console.log("No agent definitions."); return; }
+    for (const d of defs) {
+      const tags: string[] = [`[${d.scope ?? "user"}]`];
+      if (d.role) tags.push(`role=${d.role}`);
+      if (d.preset) tags.push(`preset=${d.preset}`);
+      if (d.effort) tags.push(`effort=${d.effort}`);
+      if (d.background) tags.push("background");
+      console.log(`  ${d.name} ${tags.join(" ")} — ${d.description}`);
+    }
+  });
+
+agentCmd
+  .command("show <name>")
+  .description("Show the full resolved agent definition")
+  .action((name: string) => {
+    const def = getAgentDefinition(name);
+    if (!def) { console.error(`[claude-drive] Agent not found: ${name}`); process.exitCode = 1; return; }
+    console.log(JSON.stringify(def, null, 2));
   });
 
 // ── dream ─────────────────────────────────────────────────────────────────
