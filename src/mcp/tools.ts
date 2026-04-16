@@ -124,40 +124,80 @@ export function registerAllTools(server: McpServer, opts: McpToolDeps): void {
   });
 
   // ── Agent Screen tools ────────────────────────────────────────────────────
+  //
+  // agent_screen_log is the canonical unified entry point; the 5 original
+  // per-kind tools remain as back-compat aliases that forward to the
+  // appropriate dispatcher. Callers should prefer the unified form; aliases
+  // emit a debug-level deprecation notice.
 
-  server.tool("agent_screen_activity", "Log an activity message to the agent screen", {
+  server.tool("agent_screen_log", "Log an agent-screen event (unified: activity|file|decision|clear|chime)", {
+    kind: z.enum(["activity", "file", "decision", "clear", "chime"]),
+    agent: z.string().optional(),
+    text: z.string().optional(),
+    path: z.string().optional(),
+    action: z.string().optional(),
+    name: z.string().optional(),
+  }, async ({ kind, agent, text, path, action, name }) => {
+    switch (kind) {
+      case "activity":
+        if (!agent || !text) return { content: [{ type: "text", text: "activity requires {agent, text}" }], isError: true };
+        logActivity(agent, text);
+        return { content: [{ type: "text", text: "logged" }] };
+      case "file":
+        if (!agent || !path) return { content: [{ type: "text", text: "file requires {agent, path}" }], isError: true };
+        logFile(agent, path, action);
+        return { content: [{ type: "text", text: "logged" }] };
+      case "decision":
+        if (!agent || !text) return { content: [{ type: "text", text: "decision requires {agent, text}" }], isError: true };
+        logDecision(agent, text);
+        return { content: [{ type: "text", text: "logged" }] };
+      case "clear":
+        agentOutput.emit("event", { type: "clear" });
+        return { content: [{ type: "text", text: "cleared" }] };
+      case "chime":
+        agentOutput.emit("event", { type: "chime", name });
+        return { content: [{ type: "text", text: "chime" }] };
+    }
+  });
+
+  server.tool("agent_screen_activity", "Deprecated alias — use agent_screen_log kind=activity", {
     agent: z.string(),
     text: z.string(),
   }, async ({ agent, text }) => {
+    logger.debug("[mcp] agent_screen_activity is deprecated; use agent_screen_log.");
     logActivity(agent, text);
     return { content: [{ type: "text", text: "logged" }] };
   });
 
-  server.tool("agent_screen_file", "Log a file touch to the agent screen", {
+  server.tool("agent_screen_file", "Deprecated alias — use agent_screen_log kind=file", {
     agent: z.string(),
     path: z.string(),
     action: z.string().optional(),
   }, async ({ agent, path, action }) => {
+    logger.debug("[mcp] agent_screen_file is deprecated; use agent_screen_log.");
     logFile(agent, path, action);
     return { content: [{ type: "text", text: "logged" }] };
   });
 
-  server.tool("agent_screen_decision", "Log a decision to the agent screen", {
+  server.tool("agent_screen_decision", "Deprecated alias — use agent_screen_log kind=decision", {
     agent: z.string(),
     text: z.string(),
   }, async ({ agent, text }) => {
+    logger.debug("[mcp] agent_screen_decision is deprecated; use agent_screen_log.");
     logDecision(agent, text);
     return { content: [{ type: "text", text: "logged" }] };
   });
 
-  server.tool("agent_screen_clear", "Clear the agent screen", {}, async () => {
+  server.tool("agent_screen_clear", "Deprecated alias — use agent_screen_log kind=clear", {}, async () => {
+    logger.debug("[mcp] agent_screen_clear is deprecated; use agent_screen_log.");
     agentOutput.emit("event", { type: "clear" });
     return { content: [{ type: "text", text: "cleared" }] };
   });
 
-  server.tool("agent_screen_chime", "Play a chime notification", {
+  server.tool("agent_screen_chime", "Deprecated alias — use agent_screen_log kind=chime", {
     name: z.string().optional(),
   }, async ({ name }) => {
+    logger.debug("[mcp] agent_screen_chime is deprecated; use agent_screen_log.");
     agentOutput.emit("event", { type: "chime", name });
     return { content: [{ type: "text", text: "chime" }] };
   });
