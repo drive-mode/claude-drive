@@ -10,21 +10,27 @@ import path from "path";
 import os from "os";
 import { logger } from "./logger.js";
 
-let edgeTtsAvailable: boolean | undefined;
+/** Cached probe. Encapsulated so tests can reset without module reload. */
+const state: { available: boolean | undefined } = { available: undefined };
+
+/** Test-only: reset cached availability. */
+export function __resetEdgeTtsForTests(): void {
+  state.available = undefined;
+}
 
 export function stopEdgeTts(): void {
   // Audio playback is via OS command; handled by stop() in tts.ts via say fallback.
 }
 
 export function isEdgeTtsAvailable(): boolean {
-  if (edgeTtsAvailable !== undefined) return edgeTtsAvailable;
+  if (state.available !== undefined) return state.available;
   try {
     require.resolve("edge-tts-universal");
-    edgeTtsAvailable = true;
+    state.available = true;
   } catch {
-    edgeTtsAvailable = false;
+    state.available = false;
   }
-  return edgeTtsAvailable;
+  return state.available;
 }
 
 function spawnPlayAudio(filePath: string): void {

@@ -91,7 +91,10 @@ export function buildSubagentDefs(
 
 // ── SDK pre-warm (startup) ─────────────────────────────────────────────────
 
-/** Module-scoped promise so startup() is called at most once per process. */
+/**
+ * Module-scoped cached promise: intentional singleton so SDK `startup()` runs
+ * at most once per process. Tests reset via `__resetStartupPromise()` below.
+ */
 let startupPromise: Promise<void> | undefined;
 
 /**

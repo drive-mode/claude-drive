@@ -6,12 +6,38 @@ import type { DriveModeManager } from "./driveMode.js";
 import { saveSession, loadSession, listSessions as listStoredSessions } from "./sessionStore.js";
 import type { SessionSnapshot } from "./sessionStore.js";
 
-let activityLog: import("./agentOutput.js").DriveOutputEvent[] = [];
 const MAX_LOG = 200;
 
+/**
+ * Rolling activity log. The public `trackEvent` pushes onto the default
+ * instance; tests can call `__resetActivityLog()` for isolation.
+ */
+class ActivityLog {
+  private events: import("./agentOutput.js").DriveOutputEvent[] = [];
+  push(ev: import("./agentOutput.js").DriveOutputEvent): void {
+    this.events.push(ev);
+    if (this.events.length > MAX_LOG) this.events.shift();
+  }
+  snapshot(): import("./agentOutput.js").DriveOutputEvent[] {
+    return [...this.events];
+  }
+  replace(events: import("./agentOutput.js").DriveOutputEvent[]): void {
+    this.events = [...events];
+  }
+  clear(): void {
+    this.events = [];
+  }
+}
+
+const defaultLog = new ActivityLog();
+
 export function trackEvent(event: import("./agentOutput.js").DriveOutputEvent): void {
-  activityLog.push(event);
-  if (activityLog.length > MAX_LOG) activityLog.shift();
+  defaultLog.push(event);
+}
+
+/** Test-only: wipe the activity log. */
+export function __resetActivityLog(): void {
+  defaultLog.clear();
 }
 
 export function createSession(registry: OperatorRegistry, driveMode: DriveModeManager, name?: string): string {
@@ -22,7 +48,7 @@ export function createSession(registry: OperatorRegistry, driveMode: DriveModeMa
     name,
     driveMode: { active: driveMode.active, subMode: driveMode.subMode },
     operators: registry.list(),
-    activityLog: [...activityLog],
+    activityLog: defaultLog.snapshot(),
   };
   saveSession(snapshot);
   return id;
@@ -49,7 +75,7 @@ export function resumeSession(id: string, registry: OperatorRegistry, driveMode:
     }
   }
 
-  activityLog = [...snapshot.activityLog];
+  defaultLog.replace(snapshot.activityLog);
   return true;
 }
 

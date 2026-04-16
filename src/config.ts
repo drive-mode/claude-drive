@@ -122,62 +122,98 @@ const DEFAULTS: Record<string, unknown> = {
   "dream.maxAgeMs": 604800000,       // 7 days
 };
 
-let fileConfig: Record<string, unknown> = {};
-let runtimeFlags: Record<string, unknown> = {};
+/**
+ * Encapsulates the two mutable layers (file-backed + runtime flags) that used
+ * to be free-floating module-level `let`s. The default singleton is the one
+ * exposed via the `setFlag`/`getConfig`/`saveConfig` free functions below.
+ */
+class ConfigStore {
+  private fileConfig: Record<string, unknown> = {};
+  private runtimeFlags: Record<string, unknown> = {};
 
-function loadFile(): void {
-  try {
-    const p = configFile();
-    if (fs.existsSync(p)) {
-      const raw = JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
-      const validated = validateConfig(raw);
-      fileConfig = validated.parsed;
-      if (validated.errors.length > 0) {
-        const summary = validated.errors
-          .map((e) => `${e.key}=${JSON.stringify(e.value)} (${e.message})`)
-          .join("; ");
-        process.stderr.write(`[config] Ignoring ${validated.errors.length} invalid value(s): ${summary}\n`);
+  constructor() {
+    this.load();
+  }
+
+  load(): void {
+    try {
+      const p = configFile();
+      if (fs.existsSync(p)) {
+        const raw = JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+        const validated = validateConfig(raw);
+        this.fileConfig = validated.parsed;
+        if (validated.errors.length > 0) {
+          const summary = validated.errors
+            .map((e) => `${e.key}=${JSON.stringify(e.value)} (${e.message})`)
+            .join("; ");
+          process.stderr.write(`[config] Ignoring ${validated.errors.length} invalid value(s): ${summary}\n`);
+        }
+      } else {
+        this.fileConfig = {};
       }
+    } catch {
+      this.fileConfig = {};
     }
-  } catch {
-    fileConfig = {};
+  }
+
+  setFlag(key: string, value: unknown): void {
+    this.runtimeFlags[key] = value;
+  }
+
+  get<T>(key: string): T {
+    if (key in this.runtimeFlags) return this.runtimeFlags[key] as T;
+
+    const envKey = "CLAUDE_DRIVE_" + key.toUpperCase().replace(/\./g, "_");
+    if (process.env[envKey] !== undefined) return process.env[envKey] as unknown as T;
+
+    if (key in this.fileConfig) return this.fileConfig[key] as T;
+    if (key in DEFAULTS) return DEFAULTS[key] as T;
+
+    return undefined as unknown as T;
+  }
+
+  save(key: string, value: unknown): void {
+    const v = validateConfigValue(key, value);
+    if (!v.ok) {
+      process.stderr.write(`[config] Rejecting invalid value for ${key}: ${v.message}\n`);
+      return;
+    }
+    this.load();
+    this.fileConfig[key] = v.value;
+    try {
+      atomicWriteJSON(configFile(), this.fileConfig);
+    } catch (e) {
+      process.stderr.write(`[config] Failed to save: ${String(e)}\n`);
+    }
+  }
+
+  /** Test-only: reset both layers. */
+  __resetForTests(): void {
+    this.fileConfig = {};
+    this.runtimeFlags = {};
   }
 }
 
-loadFile();
+/** The default, process-wide config store. */
+const defaultStore = new ConfigStore();
 
 /** Override a config value at runtime (e.g., from CLI flags). */
 export function setFlag(key: string, value: unknown): void {
-  runtimeFlags[key] = value;
+  defaultStore.setFlag(key, value);
 }
 
 /** Get a config value by dot-path key (e.g., "tts.backend"). */
 export function getConfig<T>(key: string): T {
-  if (key in runtimeFlags) return runtimeFlags[key] as T;
-
-  // Check env var: "tts.backend" → "CLAUDE_DRIVE_TTS_BACKEND"
-  const envKey = "CLAUDE_DRIVE_" + key.toUpperCase().replace(/\./g, "_");
-  if (process.env[envKey] !== undefined) return process.env[envKey] as unknown as T;
-
-  if (key in fileConfig) return fileConfig[key] as T;
-  if (key in DEFAULTS) return DEFAULTS[key] as T;
-
-  return undefined as unknown as T;
+  return defaultStore.get<T>(key);
 }
 
 /** Write a value to the persistent config file. */
 export function saveConfig(key: string, value: unknown): void {
-  // Validate explicitly-set values. Unknown keys pass through untouched.
-  const v = validateConfigValue(key, value);
-  if (!v.ok) {
-    process.stderr.write(`[config] Rejecting invalid value for ${key}: ${v.message}\n`);
-    return;
-  }
-  loadFile();
-  fileConfig[key] = v.value;
-  try {
-    atomicWriteJSON(configFile(), fileConfig);
-  } catch (e) {
-    process.stderr.write(`[config] Failed to save: ${String(e)}\n`);
-  }
+  defaultStore.save(key, value);
+}
+
+/** Test-only: reload file + clear runtime flags. */
+export function __resetConfigForTests(): void {
+  defaultStore.__resetForTests();
+  defaultStore.load();
 }
