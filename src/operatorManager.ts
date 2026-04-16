@@ -3,7 +3,7 @@
  * Maps each OperatorContext to a query() call with appropriate tool permissions.
  */
 import type { OperatorContext, PermissionPreset } from "./operatorRegistry.js";
-import type { SDKResultSuccess, SDKResultError, SDKSystemMessage, SDKRateLimitEvent } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultSuccess, SDKResultError, SDKSystemMessage, SDKRateLimitEvent, AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, logDecision } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
@@ -136,7 +136,7 @@ export async function runOperator(
   const reflectionHooks: ReflectionHooks = reflectionEnabled
     ? buildReflectionHooks(op.role)
     : {};
-  const reflectionAgents = reflectionEnabled
+  const reflectionAgents: Record<string, AgentDefinition> = reflectionEnabled
     ? { reflector: buildReflectorAgent(), "best-practices": buildBestPracticesAgent() }
     : {};
 
