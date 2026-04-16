@@ -8,8 +8,10 @@
 
 ```bash
 npm run compile     # TypeScript compilation (tsc -p ./)
-npm run watch       # Watch mode
-npm test            # Jest unit tests (176 tests across 17 files)
+npm run watch       # Watch mode (tsc only)
+npm test            # Jest (229 tests across 20 files)
+npm run test:watch  # Jest in watch mode
+npm run clean       # Delete out/
 ```
 
 Start the server:
@@ -18,6 +20,35 @@ node out/cli.js start          # default port 7891
 node out/cli.js start -p 7892  # custom port
 node out/cli.js port           # print live MCP URL (reads ~/.claude-drive/port)
 ```
+
+## Dev Workflow
+
+For iterative development, use the integrated dev orchestrator:
+
+```bash
+# Terminal 1: tsc watch + auto-restart server on rebuild
+npm run dev                    # default port 7891
+npm run dev -- -- -p 7892      # pass -p 7892 to the server
+
+# Terminal 2: test watcher
+npm run test:watch
+
+# Ad-hoc: probe the running MCP server without Claude Code
+npm run mcp list                                        # list all tools
+npm run mcp call operator_spawn '{"name":"alice"}'      # invoke a tool
+npm run mcp call drive_get_state '{}'
+npm run mcp state                                       # shortcut for ^
+```
+
+`npm run dev` (`scripts/dev.js`) runs `tsc --watch` as a child, starts the
+server once the first compile succeeds, and SIGINT-restarts the server on
+every rebuild (with SIGKILL fallback after 3s). Logs are line-prefixed with
+`[tsc]`, `[srv]`, and `[dev]` so the three streams are readable together.
+
+`npm run mcp` (`scripts/mcp-probe.js`) does the MCP `initialize` handshake,
+then runs `tools/list` or `tools/call` against the server pointed to by
+`~/.claude-drive/port`. Useful for smoke testing tools before wiring Claude
+Code.
 
 ## Architecture
 

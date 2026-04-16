@@ -13,8 +13,12 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "build": "npm run compile",
+    "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "start": "node out/cli.js start"
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "start": "node out/cli.js start",
+    "dev": "node scripts/dev.js",
+    "mcp": "node scripts/mcp-probe.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.77",
