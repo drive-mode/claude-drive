@@ -4,6 +4,7 @@
  */
 import { execSync } from "child_process";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 
 export type HookEvent =
   | "PreToolUse"
@@ -104,7 +105,7 @@ export class HookRegistry {
           combined.inject = (combined.inject ?? "") + "\n" + hook.prompt;
         }
       } catch (e) {
-        console.error(`[hooks] Hook "${hook.id}" failed:`, e);
+        logger.error(`[hooks] Hook "${hook.id}" failed:`, e);
       }
     }
 
@@ -169,7 +170,7 @@ export class HookRegistry {
             this.register(def);
           }
         } catch (e) {
-          console.error(`[hooks] Failed to load hook file ${file}:`, e);
+          logger.error(`[hooks] Failed to load hook file ${file}:`, e);
         }
       }
     } catch {

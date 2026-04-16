@@ -8,6 +8,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { logger } from "./logger.js";
 
 let edgeTtsAvailable: boolean | undefined;
 
@@ -67,7 +68,7 @@ export async function speakEdgeTts(
     onSpoken?.(text);
     return true;
   } catch (e) {
-    console.error("[Drive Edge-TTS]", e);
+    logger.error("[Drive Edge-TTS]", e);
     return false;
   }
 }

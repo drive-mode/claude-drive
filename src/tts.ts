@@ -6,6 +6,7 @@
 import { speakPiper, stopPiper, isPiperAvailable } from "./piper.js";
 import { speakEdgeTts, stopEdgeTts, isEdgeTtsAvailable } from "./edgeTts.js";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 
 const SPOKEN_HISTORY_SIZE = 20;
 const spokenHistory: string[] = [];
@@ -74,7 +75,7 @@ async function doSayFallback(speech: string, voice: string | undefined, speed: n
   if (!say) { inProgressUtterance = undefined; return; }
   say.stop();
   say.speak(speech, voice ?? null, speed, (err: string) => {
-    if (err) console.error("[Drive TTS]", err);
+    if (err) logger.error("[Drive TTS]", err);
     inProgressUtterance = undefined;
     pushSpoken(speech);
   });

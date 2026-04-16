@@ -16,6 +16,7 @@ import path from "path";
 import { getConfig } from "./config.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { agentsDir, expandUserHome } from "./paths.js";
+import { logger } from "./logger.js";
 import type { EffortLevel, OperatorRole, PermissionPreset } from "./operatorRegistry.js";
 
 export type AgentDefinitionScope = "builtin" | "user" | "project";
@@ -120,7 +121,7 @@ function readDefsFromDir(dir: string, scope: AgentDefinitionScope): AgentDefinit
         const def = parseAgentFile(content, path.join(dir, f), scope);
         if (def) out.push(def);
       } catch (e) {
-        console.warn(`[agentDefinitionLoader] failed to load ${f}:`, e);
+        logger.warn(`[agentDefinitionLoader] failed to load ${f}:`, e);
       }
     }
     return out;

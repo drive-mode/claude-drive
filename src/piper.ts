@@ -12,6 +12,7 @@ import path from "path";
 import os from "os";
 import { spawn } from "child_process";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 
 let piperAvailable: boolean | undefined;
 let currentProcess: import("child_process").ChildProcess | null = null;
@@ -52,10 +53,10 @@ export function speakPiper(text: string, _volume: number, onSpoken?: (speech: st
 
   let stderr = "";
   proc.stderr.on("data", (d) => { stderr += d.toString(); });
-  proc.on("error", (err) => { console.error("[Drive Piper]", err); currentProcess = null; });
+  proc.on("error", (err) => { logger.error("[Drive Piper]", err); currentProcess = null; });
   proc.on("close", (code) => {
     currentProcess = null;
-    if (code !== 0) { console.error("[Drive Piper] exit", code, stderr); return; }
+    if (code !== 0) { logger.error("[Drive Piper] exit", code, stderr); return; }
     if (!fs.existsSync(wavPath)) return;
     const playProc = spawnPlayWav(wavPath);
     if (playProc) currentProcess = playProc;

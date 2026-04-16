@@ -8,6 +8,7 @@ import path from "path";
 import os from "os";
 import crypto from "crypto";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 
 export type MemoryKind = "fact" | "preference" | "correction" | "decision" | "context";
 
@@ -68,7 +69,7 @@ export class MemoryStore {
       fs.writeFileSync(tmp, JSON.stringify([...this.entries.values()], null, 2), "utf-8");
       fs.renameSync(tmp, MEMORY_FILE);
     } catch (e) {
-      console.error("[memoryStore] Failed to flush:", e);
+      logger.error("[memoryStore] Failed to flush:", e);
     }
   }
 

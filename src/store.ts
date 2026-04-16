@@ -4,11 +4,13 @@
  */
 import fs from "fs";
 import path from "path";
-import os from "os";
 import { atomicWriteJSON } from "./atomicWrite.js";
+import { home } from "./paths.js";
+import { logger } from "./logger.js";
 
-const STORE_DIR = path.join(os.homedir(), ".claude-drive");
-const STORE_FILE = path.join(STORE_DIR, "state.json");
+function storeFile(): string {
+  return path.join(home(), "state.json");
+}
 
 let cache: Record<string, unknown> = {};
 let loaded = false;
@@ -16,9 +18,10 @@ let loaded = false;
 function ensureLoaded(): void {
   if (loaded) return;
   try {
-    fs.mkdirSync(STORE_DIR, { recursive: true });
-    if (fs.existsSync(STORE_FILE)) {
-      cache = JSON.parse(fs.readFileSync(STORE_FILE, "utf-8"));
+    const f = storeFile();
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    if (fs.existsSync(f)) {
+      cache = JSON.parse(fs.readFileSync(f, "utf-8"));
     }
   } catch {
     cache = {};
@@ -28,9 +31,9 @@ function ensureLoaded(): void {
 
 function flush(): void {
   try {
-    atomicWriteJSON(STORE_FILE, cache);
+    atomicWriteJSON(storeFile(), cache);
   } catch (e) {
-    console.error("[store] Failed to flush:", e);
+    logger.error("[store] Failed to flush:", e);
   }
 }
 

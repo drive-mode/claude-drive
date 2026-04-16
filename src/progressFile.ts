@@ -11,6 +11,7 @@ import fs from "fs";
 import path from "path";
 import { atomicWriteJSON } from "./atomicWrite.js";
 import { subagentsBaseDir } from "./paths.js";
+import { logger } from "./logger.js";
 
 export interface ProgressEvent {
   /** Event kind. */
@@ -53,14 +54,14 @@ export function writeProgressEvent(
   try {
     fs.appendFileSync(path.join(dir, "events.jsonl"), JSON.stringify(stamped) + "\n", "utf-8");
   } catch (e) {
-    console.error(`[progressFile] append failed for ${operatorId}:`, e);
+    logger.error(`[progressFile] append failed for ${operatorId}:`, e);
   }
 
   // Atomic snapshot.
   try {
     atomicWriteJSON(path.join(dir, "last.json"), stamped);
   } catch (e) {
-    console.error(`[progressFile] snapshot failed for ${operatorId}:`, e);
+    logger.error(`[progressFile] snapshot failed for ${operatorId}:`, e);
   }
 
   return stamped;

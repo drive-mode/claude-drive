@@ -6,6 +6,8 @@
 import fs from "fs";
 import { atomicWriteJSON } from "./atomicWrite.js";
 import { configFile } from "./paths.js";
+// NOTE: do NOT import logger — logger imports config; the import cycle would
+// unload one of them. Use stderr directly for the single failure path here.
 
 // Defaults mirror cursorDrive.* settings schema
 const DEFAULTS: Record<string, unknown> = {
@@ -44,6 +46,9 @@ const DEFAULTS: Record<string, unknown> = {
 
   // Memory (SDK event import)
   "memory.syncFromSdk": true,
+
+  // Logging
+  "log.level": "info",
 
   // MCP server
   "mcp.port": 7891,
@@ -158,6 +163,6 @@ export function saveConfig(key: string, value: unknown): void {
   try {
     atomicWriteJSON(configFile(), fileConfig);
   } catch (e) {
-    console.error("[config] Failed to save:", e);
+    process.stderr.write(`[config] Failed to save: ${String(e)}\n`);
   }
 }

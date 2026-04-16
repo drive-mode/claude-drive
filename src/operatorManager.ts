@@ -16,6 +16,7 @@ import type {
   SDKRateLimitEvent,
 } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, agentOutput } from "./agentOutput.js";
+import { logger } from "./logger.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
 import { buildMemoryContext, importSdkMemoryEvent } from "./memoryManager.js";
@@ -112,7 +113,7 @@ export async function ensureStartup(): Promise<void> {
       }
     } catch (e) {
       // startup is a best-effort optimisation; never fail operator runs because of it
-      console.warn("[operatorManager] startup() skipped:", e);
+      logger.warn("[operatorManager] startup() skipped:", e);
     }
   })();
   return startupPromise;
@@ -228,7 +229,7 @@ export async function runOperator(
       const sdk = await import("@anthropic-ai/claude-agent-sdk");
       queryFn = sdk.query;
     } catch {
-      console.error("[OperatorManager] @anthropic-ai/claude-agent-sdk not installed. Run: npm install @anthropic-ai/claude-agent-sdk");
+      logger.error("[OperatorManager] @anthropic-ai/claude-agent-sdk not installed. Run: npm install @anthropic-ai/claude-agent-sdk");
       return;
     }
 
@@ -342,7 +343,7 @@ export async function runOperator(
             try {
               importSdkMemoryEvent(op.id, m);
             } catch (e) {
-              console.warn("[operatorManager] importSdkMemoryEvent failed:", e);
+              logger.warn("[operatorManager] importSdkMemoryEvent failed:", e);
             }
           }
           const count = m.memories?.length ?? 0;
@@ -354,7 +355,7 @@ export async function runOperator(
         const rle = msg as unknown as SDKRateLimitEvent;
         const info = rle.rate_limit_info;
         if (info) {
-          console.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
+          logger.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
         }
       } else if (mAny.type === "result") {
         const resultMsg = msg as unknown as SDKResultSuccess | SDKResultError;

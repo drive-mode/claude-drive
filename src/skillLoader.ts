@@ -8,6 +8,7 @@ import { getConfig } from "./config.js";
 import { skillsDir, expandUserHome } from "./paths.js";
 import type { OperatorRole, PermissionPreset } from "./operatorRegistry.js";
 import { parseFrontmatter, resolveTemplate as _resolveTemplate } from "./frontmatter.js";
+import { logger } from "./logger.js";
 
 // Re-export for backwards compatibility and for other loaders that imported
 // `resolveTemplate` from here.
@@ -69,7 +70,7 @@ export class SkillRegistry {
             this.skills.set(skill.name, skill);
           }
         } catch (e) {
-          console.error(`[skills] Failed to load skill ${file}:`, e);
+          logger.error(`[skills] Failed to load skill ${file}:`, e);
         }
       }
     } catch {

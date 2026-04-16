@@ -6,6 +6,7 @@
 import { EventEmitter } from "events";
 import { getConfig } from "./config.js";
 import { hookRegistry } from "./hooks.js";
+import { logger } from "./logger.js";
 
 type SyncState = "idle" | "syncing" | "conflict" | "applying" | "error";
 
@@ -175,7 +176,7 @@ export class OperatorRegistry {
     const requestedParentId = options?.parentId;
     const parentId = requestedParentId && this.operators.has(requestedParentId) ? requestedParentId : undefined;
     if (requestedParentId && !parentId) {
-      console.warn(`[OperatorRegistry] spawn: parentId "${requestedParentId}" not found; spawning without parent.`);
+      logger.warn(`[OperatorRegistry] spawn: parentId "${requestedParentId}" not found; spawning without parent.`);
     }
 
     const rawDepth = options?.depth ?? (parentId ? (this.operators.get(parentId)!.depth) + 1 : 0);
@@ -185,7 +186,7 @@ export class OperatorRegistry {
     if (rawDepth > maxDepth) {
       depth = maxDepth;
       depthClamped = true;
-      console.warn(`[OperatorRegistry] spawn: depth ${rawDepth} exceeds maxDepth ${maxDepth}; clamping.`);
+      logger.warn(`[OperatorRegistry] spawn: depth ${rawDepth} exceeds maxDepth ${maxDepth}; clamping.`);
     }
 
     const role = options?.role;

@@ -38,6 +38,7 @@ import {
   createCheckpoint, restoreCheckpoint, listCheckpoints, forkSession,
 } from "./checkpoint.js";
 import { AutoDreamDaemon } from "./autoDream.js";
+import { logger } from "./logger.js";
 
 export function getPortFilePath(): string {
   return portFile();
@@ -268,7 +269,7 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
       isBackground,
       taskBudget,
       effort: merged.options.effort,
-    }).catch((e) => console.error(`[drive_run_task] Error in operator ${op!.name}:`, e));
+    }).catch((e) => logger.error(`[drive_run_task] Error in operator ${op!.name}:`, e));
     return { content: [{ type: "text", text: `Task ${isBackground ? "dispatched (background)" : "dispatched"} to ${op.name}: ${task}` }] };
   });
 
@@ -697,7 +698,7 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
         });
       }
       runOperator(op, prompt, { allOperators: registry.getActive(), onTaskComplete: opts.onTaskComplete })
-        .catch((e) => console.error(`[skill_run] Error in operator ${op!.name}:`, e));
+        .catch((e) => logger.error(`[skill_run] Error in operator ${op!.name}:`, e));
       return { content: [{ type: "text", text: `Skill "${name}" dispatched to ${op.name}` }] };
     } catch (e) {
       return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
@@ -835,7 +836,7 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
           resolve(false);
         } else {
           resolve(false);
-          console.error(`[claude-drive] Port error: ${err.message}`);
+          logger.error(`[claude-drive] Port error: ${err.message}`);
         }
       });
       httpServer.listen(candidatePort, "127.0.0.1", () => resolve(true));
@@ -859,7 +860,7 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
   process.once("SIGTERM", cleanup);
   process.once("exit", cleanup);
 
-  console.log(`[claude-drive] MCP server listening on http://127.0.0.1:${boundPort}/mcp`);
-  console.log(`[claude-drive] Port file: ${getPortFilePath()}`);
+  logger.info(`[claude-drive] MCP server listening on http://127.0.0.1:${boundPort}/mcp`);
+  logger.info(`[claude-drive] Port file: ${getPortFilePath()}`);
   return { port: boundPort };
 }
