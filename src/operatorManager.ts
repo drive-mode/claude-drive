@@ -15,7 +15,7 @@ import type {
   SDKSystemMessage,
   SDKRateLimitEvent,
 } from "@anthropic-ai/claude-agent-sdk";
-import { logActivity, logFile, logDecision, agentOutput } from "./agentOutput.js";
+import { logActivity, logFile, agentOutput } from "./agentOutput.js";
 import { speak } from "./tts.js";
 import { getConfig } from "./config.js";
 import { buildMemoryContext, importSdkMemoryEvent } from "./memoryManager.js";

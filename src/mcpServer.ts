@@ -33,11 +33,10 @@ import { memoryStore } from "./memoryStore.js";
 import type { MemoryKind } from "./memoryStore.js";
 import { hookRegistry } from "./hooks.js";
 import type { HookEvent, HookType } from "./hooks.js";
-import { skillRegistry, loadDefaultSkills } from "./skillLoader.js";
+import { skillRegistry } from "./skillLoader.js";
 import {
   createCheckpoint, restoreCheckpoint, listCheckpoints, forkSession,
 } from "./checkpoint.js";
-import { trackEvent } from "./sessionManager.js";
 import { AutoDreamDaemon } from "./autoDream.js";
 
 export function getPortFilePath(): string {
@@ -527,7 +526,6 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
   // ── Cost / stats tools ────────────────────────────────────────────────────
 
   server.tool("drive_get_costs", "Get cost and stats for all operators and plans", {}, async () => {
-    const ops = registry.getActive();
     const totals = registry.getTotalStats();
     const all = registry.list();
     const lines: string[] = [];
@@ -713,7 +711,6 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
     description: z.string().optional(),
   }, async ({ name, description }) => {
     const sessionId = opts.sessionId ?? `session-${Date.now()}`;
-    const { trackEvent: _te, ...sessionMod } = await import("./sessionManager.js");
     const cp = createCheckpoint(sessionId, registry, driveMode, [], name, description);
     return { content: [{ type: "text", text: `Checkpoint created: ${cp.id}${name ? ` (${name})` : ""}` }] };
   });

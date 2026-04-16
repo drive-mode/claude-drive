@@ -4,7 +4,6 @@
  * merges similar entries, and promotes cross-operator patterns to shared.
  */
 import { memoryStore } from "./memoryStore.js";
-import type { MemoryEntry } from "./memoryStore.js";
 import { getConfig } from "./config.js";
 
 export interface DreamResult {

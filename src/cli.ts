@@ -74,11 +74,9 @@ program
 
     // Initialize hooks, skills, and auto-dream
     import("os").then(({ default: os }) => {
-      import("path").then(({ default: pathMod }) => {
-        const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
-        hookRegistry.loadFromDirectory(hooksDir);
-        hookRegistry.loadFromConfig();
-      });
+      const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
+      hookRegistry.loadFromDirectory(hooksDir);
+      hookRegistry.loadFromConfig();
     });
     loadDefaultSkills();
     const dreamDaemon = new AutoDreamDaemon();

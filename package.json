@@ -13,7 +13,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "build": "npm run compile",
+    "lint": "tsc -p ./ --noEmit --noUnusedLocals --noUnusedParameters",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage --coverageDirectory=/opt/cursor/artifacts/coverage",
     "start": "node out/cli.js start"
   },
   "dependencies": {
