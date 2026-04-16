@@ -15,23 +15,9 @@ import { jest } from "@jest/globals";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { installSdkMock, makeQueryStream } from "./_helpers/sdkMock.js";
 
-// Build a synthetic SDK query() that yields a canned event sequence.
-function makeQueryStream(events: unknown[]) {
-  async function* gen() {
-    for (const e of events) yield e;
-  }
-  return gen();
-}
-
-// These are captured at mock-time via closure.
-const sdkQueryMock = jest.fn();
-const sdkStartupMock = jest.fn(async () => { /* no-op */ });
-
-jest.unstable_mockModule("@anthropic-ai/claude-agent-sdk", () => ({
-  query: sdkQueryMock,
-  startup: sdkStartupMock,
-}));
+const { queryMock: sdkQueryMock, startupMock: sdkStartupMock } = installSdkMock();
 
 // Mute TTS so tests don't exec anything.
 jest.unstable_mockModule("../src/tts.js", () => ({

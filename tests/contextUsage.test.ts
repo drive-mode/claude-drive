@@ -5,14 +5,9 @@
  * fetch when the query handle exposes getContextUsage on the iterator.
  */
 import { jest } from "@jest/globals";
+import { installSdkMock } from "./_helpers/sdkMock.js";
 
-const sdkQueryMock = jest.fn();
-const sdkStartupMock = jest.fn(async () => {});
-
-jest.unstable_mockModule("@anthropic-ai/claude-agent-sdk", () => ({
-  query: sdkQueryMock,
-  startup: sdkStartupMock,
-}));
+const { queryMock: sdkQueryMock } = installSdkMock();
 
 jest.unstable_mockModule("../src/tts.js", () => ({
   speak: jest.fn(),
