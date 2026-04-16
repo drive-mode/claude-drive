@@ -234,11 +234,30 @@ operatorCmd
 operatorCmd
   .command("list")
   .description("List active operators")
-  .action(() => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
     const ops = registry.getActive();
+    const fgId = registry.getForeground()?.id;
+    if (opts.json) {
+      console.log(JSON.stringify(
+        ops.map((o) => ({
+          id: o.id,
+          name: o.name,
+          status: o.status,
+          role: o.role,
+          preset: o.permissionPreset,
+          task: o.task,
+          isForeground: o.id === fgId,
+          executionMode: o.executionMode,
+        })),
+        null,
+        2,
+      ));
+      return;
+    }
     if (ops.length === 0) { console.log("No active operators."); return; }
     for (const op of ops) {
-      const fg = registry.getForeground()?.id === op.id ? " [fg]" : "";
+      const fg = fgId === op.id ? " [fg]" : "";
       console.log(`  ${op.name}${fg}  ${op.permissionPreset}  ${op.status}  ${op.task || "(no task)"}`);
     }
   });
@@ -277,7 +296,17 @@ modeCmd
 modeCmd
   .command("status")
   .description("Show current drive state")
-  .action(() => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
+    if (opts.json) {
+      console.log(JSON.stringify({
+        active: driveMode.active,
+        subMode: driveMode.subMode,
+        foregroundOperator: registry.getForeground()?.name ?? null,
+        activeCount: registry.getActive().length,
+      }, null, 2));
+      return;
+    }
     printStatus(driveMode.active, driveMode.subMode, registry.getForeground()?.name, registry.getActive().length - 1);
   });
 
@@ -400,8 +429,13 @@ const agentCmd = program.command("agent").description("Manage agent definitions"
 agentCmd
   .command("list")
   .description("List all agent definitions (builtin + user + project)")
-  .action(() => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
     const defs = loadAgentDefinitions();
+    if (opts.json) {
+      console.log(JSON.stringify(defs, null, 2));
+      return;
+    }
     if (defs.length === 0) { console.log("No agent definitions."); return; }
     for (const d of defs) {
       const tags: string[] = [`[${d.scope ?? "user"}]`];
@@ -442,9 +476,23 @@ const sessionCmd = program.command("session").description("Session management");
 sessionCmd
   .command("list")
   .description("List saved sessions")
-  .action(async () => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action(async (opts: { json?: boolean }) => {
     const { listSessions } = await import("./sessionManager.js");
     const sessions = listSessions();
+    if (opts.json) {
+      console.log(JSON.stringify(
+        sessions.map((s) => ({
+          id: s.id,
+          name: s.name ?? null,
+          createdAt: s.createdAt,
+          operatorCount: s.operators.filter((o: { status: string }) => o.status !== "completed").length,
+        })),
+        null,
+        2,
+      ));
+      return;
+    }
     if (sessions.length === 0) { console.log("No saved sessions."); return; }
     for (const s of sessions) {
       const date = new Date(s.createdAt).toLocaleString();
@@ -494,8 +542,13 @@ const memoryCmd = program.command("memory").description("Memory management");
 memoryCmd
   .command("stats")
   .description("Show memory statistics")
-  .action(() => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
     const stats = memoryStore.stats();
+    if (opts.json) {
+      console.log(JSON.stringify(stats, null, 2));
+      return;
+    }
     console.log(`[claude-drive] Memory: ${stats.total} entries`);
     console.log(`  By kind: ${JSON.stringify(stats.byKind)}`);
     console.log(`  By operator: ${JSON.stringify(stats.byOperator)}`);
@@ -505,9 +558,14 @@ memoryCmd
   .command("list")
   .description("List recent memory entries")
   .option("--limit <n>", "Max entries", "20")
-  .action((opts: { limit: string }) => {
-    const { recall } = require("./memoryManager.js") as typeof import("./memoryManager.js");
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action(async (opts: { limit: string; json?: boolean }) => {
+    const { recall } = await import("./memoryManager.js");
     const entries = recall(undefined, { limit: parseInt(opts.limit, 10) });
+    if (opts.json) {
+      console.log(JSON.stringify(entries, null, 2));
+      return;
+    }
     for (const e of entries) {
       console.log(`  [${e.kind}] (${e.id.slice(0, 8)}) conf=${e.confidence.toFixed(2)} ${e.content.slice(0, 80)}`);
     }
