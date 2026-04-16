@@ -2,7 +2,7 @@
   "name": "claude-drive",
   "version": "0.1.0",
   "description": "Voice-first multi-operator pair programming for Claude Code CLI",
-  "author": "Harrison Halperin <harrisonhalperin@gmail.com> (https://github.com/hhalperin)",
+  "author": "Harrison Halperin <harrisonhalperin@gmail.com> (https://github.com/hhalperin/claude-drive)",
   "homepage": "https://github.com/hhalperin/claude-drive",
   "type": "module",
   "main": "out/cli.js",
@@ -17,16 +17,16 @@
     "start": "node out/cli.js start"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.77",
-    "@anthropic-ai/sdk": "0.79.0",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@anthropic-ai/claude-agent-sdk": "0.2.111",
+    "@anthropic-ai/sdk": "^0.81.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "chalk": "^5.3.0",
     "commander": "^12.0.0",
     "edge-tts-universal": "^1.4.0",
     "ink": "^5.0.0",
     "ink-spinner": "^5.0.0",
     "react": "^18.0.0",
-"say": "^0.16.0",
+    "say": "^0.16.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -36,6 +36,12 @@
     "jest": "^30.2.0",
     "ts-jest": "^29.4.6",
     "typescript": "^5.3.0"
+  },
+  "overrides": {
+    "axios": "^1.15.0",
+    "follow-redirects": "^1.16.0",
+    "hono": "^4.12.14",
+    "path-to-regexp": "^8.4.2"
   },
   "jest": {
     "preset": "ts-jest/presets/default-esm",
