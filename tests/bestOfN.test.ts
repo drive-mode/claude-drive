@@ -88,4 +88,48 @@ describe("runBestOfN", () => {
     const result = await runBestOfN("t", reg, { count: 1, progressBaseDir: base });
     expect(result.all[0].lastSummary).toContain("summary");
   });
+
+  test("worktreeManager integration allocates per-operator worktrees", async () => {
+    const reg = new OperatorRegistry();
+    const allocated: Array<{ operatorId: string; worktreePath: string; branchName: string }> = [];
+    const fakeWm = {
+      allocate: async (operatorId: string, _baseRef: string) => {
+        const alloc = { operatorId, worktreePath: `/tmp/wt-${operatorId}`, branchName: `drive/op/${operatorId}` };
+        allocated.push(alloc);
+        return alloc;
+      },
+      release: async () => { /* noop */ },
+      listAllocations: () => allocated,
+    } as unknown as import("../src/worktreeManager.js").WorktreeManager;
+
+    const seenCwds: string[] = [];
+    mockRunOperator.mockImplementation(async (op: any, _t: string, o: any) => {
+      seenCwds.push(o.cwd);
+      o?.onTaskComplete?.(op, { totalCostUsd: 0.1, durationMs: 1, apiDurationMs: 0, numTurns: 1 });
+      o?.registry?.markStatus(op.id, "completed");
+    });
+
+    const result = await runBestOfN("t", reg, { count: 2, worktreeManager: fakeWm });
+    expect(allocated).toHaveLength(2);
+    expect(seenCwds).toEqual(expect.arrayContaining(allocated.map((a) => a.worktreePath)));
+    // Each operator should have its allocated workspace recorded on the registry.
+    for (const r of result.all) {
+      const op = reg.findByNameOrId(r.op.id);
+      expect(op?.worktreePath).toMatch(/^\/tmp\/wt-/);
+      expect(op?.branchName).toMatch(/^drive\/op\//);
+    }
+  });
+
+  test("warns via activity log when count >= 3", async () => {
+    const { agentOutput } = await import("../src/agentOutput.js");
+    const reg = new OperatorRegistry();
+    const warnings: string[] = [];
+    const listener = (ev: { type?: string; agent?: string; text?: string }) => {
+      if (ev.type === "activity" && ev.agent === "best-of-n") warnings.push(ev.text ?? "");
+    };
+    agentOutput.on("event", listener);
+    await runBestOfN("t", reg, { count: 3 });
+    agentOutput.off("event", listener);
+    expect(warnings.some((w) => w.includes("API cost scales"))).toBe(true);
+  });
 });

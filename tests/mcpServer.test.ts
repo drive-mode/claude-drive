@@ -77,4 +77,17 @@ describe("buildMcpServer — registered tools", () => {
   it("registers at least 45 tools (sanity bound for future regressions)", () => {
     expect(names().length).toBeGreaterThanOrEqual(45);
   });
+
+  it("operator_spawn tool accepts parentId/effort/executionMode/agent parameters", () => {
+    const registry = new OperatorRegistry();
+    const driveMode = createDriveModeManager();
+    const server = buildMcpServer({ port: 0, registry, driveMode });
+    const internals = server as unknown as { _registeredTools?: Record<string, { inputSchema?: { shape?: Record<string, unknown> } }> };
+    const tool = internals._registeredTools?.["operator_spawn"];
+    // Zod schema shape — verify each new key exists.
+    const shape = (tool?.inputSchema as unknown as { shape?: Record<string, unknown> })?.shape ?? {};
+    expect(Object.keys(shape)).toEqual(expect.arrayContaining([
+      "name", "task", "role", "preset", "parentId", "effort", "executionMode", "agent",
+    ]));
+  });
 });

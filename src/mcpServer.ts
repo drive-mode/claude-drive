@@ -89,9 +89,28 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
     task: z.string().optional(),
     role: z.enum(["implementer", "reviewer", "tester", "researcher", "planner"]).optional(),
     preset: z.enum(["readonly", "standard", "full"]).optional(),
-  }, async ({ name, task, role, preset }) => {
-    const op = registry.spawn(name, task ?? "", { role, preset });
-    return { content: [{ type: "text", text: `Spawned operator: ${op.name} (${op.permissionPreset})` }] };
+    parentId: z.string().optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    executionMode: z.enum(["foreground", "background"]).optional(),
+    agent: z.string().optional(),
+  }, async ({ name, task, role, preset, parentId, effort, executionMode, agent }) => {
+    // When an agent-def name matches, apply its defaults under explicit overrides.
+    const merged = applyAgentDefinition<{
+      role?: typeof role;
+      preset?: typeof preset;
+      effort?: typeof effort;
+      executionMode?: "foreground" | "background";
+      agentDefinitionName?: string;
+    }>(agent ?? name, { role, preset, effort, executionMode });
+    const op = registry.spawn(name ?? agent, task ?? "", {
+      role: merged.options.role,
+      preset: merged.options.preset,
+      effort: merged.options.effort,
+      executionMode: merged.options.executionMode,
+      parentId,
+      agentDefinitionName: merged.options.agentDefinitionName,
+    });
+    return { content: [{ type: "text", text: `Spawned operator: ${op.name} (${op.permissionPreset}${op.executionMode === "background" ? ", bg" : ""}${op.parentId ? `, parent=${op.parentId}` : ""})` }] };
   });
 
   server.tool("operator_switch", "Switch to a different operator", {

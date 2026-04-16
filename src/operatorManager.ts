@@ -299,9 +299,16 @@ export async function runOperator(
 
       if (mAny.type === "system") {
         if (mAny.subtype === "init") {
-          const sysMsg = msg as unknown as SDKSystemMessage;
-          const sid = (sysMsg as SDKSystemMessage & { session_id?: string }).session_id;
-          if (sid) op.sessionId = sid;
+          const sysMsg = msg as unknown as SDKSystemMessage & {
+            session_id?: string;
+            memory_paths?: string[];
+          };
+          if (sysMsg.session_id) op.sessionId = sysMsg.session_id;
+          // memory_paths arrived in SDK 0.2.105; surface them in op.memory as a note.
+          const mPaths = sysMsg.memory_paths;
+          if (Array.isArray(mPaths) && mPaths.length > 0) {
+            op.memory.push(`[sdk-memory-paths] ${mPaths.join(", ")}`);
+          }
         } else if (mAny.subtype === "status") {
           const sMsg = msg as unknown as { status?: string | null };
           if (sMsg.status === "requesting") {
@@ -313,7 +320,9 @@ export async function runOperator(
           const t = msg as unknown as { description?: string; task_id?: string };
           logActivity(op.name, `▶ subtask start: ${t.description ?? t.task_id ?? ""}`);
           if (isBackground) {
-            writeProgressEvent(op.id, { type: "task_started", ...(t as object) }, opts.progressBaseDir);
+            // NOTE: spread payload first, then stamp our marker last so the
+            // progress-file `type` is always "task_started" (not SDK's "system").
+            writeProgressEvent(op.id, { ...(t as object), type: "task_started" }, opts.progressBaseDir);
           }
         } else if (mAny.subtype === "task_progress" || mAny.subtype === "task_updated") {
           const t = msg as unknown as { description?: string; summary?: string; last_tool_name?: string; usage?: object };
@@ -321,7 +330,8 @@ export async function runOperator(
           agentOutput.emit("event", { type: "progress", agent: op.name, summary: line });
           logActivity(op.name, `» ${line}`);
           if (isBackground) {
-            writeProgressEvent(op.id, { type: "task_progress", ...(t as object) }, opts.progressBaseDir);
+            const kind = mAny.subtype === "task_updated" ? "task_updated" as const : "task_progress" as const;
+            writeProgressEvent(op.id, { ...(t as object), type: kind }, opts.progressBaseDir);
           }
         } else if (mAny.subtype === "memory_recall") {
           const m = msg as unknown as {
@@ -367,7 +377,7 @@ export async function runOperator(
         if (isBackground) {
           writeProgressEvent(
             op.id,
-            { type: "result", isError: resultMsg.is_error === true, stats },
+            { isError: resultMsg.is_error === true, stats, type: "result" },
             opts.progressBaseDir,
           );
         }

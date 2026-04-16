@@ -8,8 +8,10 @@
 import { runOperator } from "./operatorManager.js";
 import type { OperatorContext, OperatorRegistry } from "./operatorRegistry.js";
 import type { OperatorRole, PermissionPreset, EffortLevel } from "./operatorRegistry.js";
+import type { WorktreeManager } from "./worktreeManager.js";
 import { getConfig } from "./config.js";
 import { readProgressSnapshot } from "./progressFile.js";
+import { logActivity } from "./agentOutput.js";
 
 export interface BestOfNResultEntry {
   op: OperatorContext;
@@ -39,6 +41,10 @@ export interface BestOfNOptions {
   progressBaseDir?: string;
   /** Abort signal (cancels all remaining runs). */
   abortSignal?: AbortSignal;
+  /** If provided, each operator is given an isolated git worktree. */
+  worktreeManager?: WorktreeManager;
+  /** Base ref for allocated worktrees (default `HEAD`). */
+  baseRef?: string;
 }
 
 export interface BestOfNResult {
@@ -74,8 +80,19 @@ export async function runBestOfN(
   const count = Math.max(1, Math.min(maxCount, requested));
   const prefix = opts.namePrefix ?? "bestof";
 
+  if (requested > count) {
+    logActivity("best-of-n", `Requested ${requested} runs; clamped to maxCount=${maxCount}.`);
+  }
+  if (count >= 3) {
+    logActivity(
+      "best-of-n",
+      `⚠ running ${count} operators in parallel — API cost scales with N. Default scorer picks lowest-cost successful run.`,
+    );
+  }
+
   // Spawn all operators up-front.
   const operators: OperatorContext[] = [];
+  const worktreeCwds = new Map<string, string>();
   for (let i = 0; i < count; i++) {
     const op = registry.spawn(`${prefix}-${i + 1}`, task, {
       preset: opts.preset,
@@ -84,6 +101,19 @@ export async function runBestOfN(
       executionMode: "background",
     });
     operators.push(op);
+
+    if (opts.worktreeManager) {
+      try {
+        const alloc = await opts.worktreeManager.allocate(op.id, opts.baseRef ?? "HEAD");
+        registry.updateWorkspaceState(op.id, {
+          worktreePath: alloc.worktreePath,
+          branchName: alloc.branchName,
+        });
+        worktreeCwds.set(op.id, alloc.worktreePath);
+      } catch (e) {
+        logActivity("best-of-n", `worktree alloc failed for ${op.name}: ${e}. Falling back to shared cwd.`);
+      }
+    }
   }
 
   // Dispatch in parallel.
@@ -96,7 +126,7 @@ export async function runBestOfN(
           isBackground: true,
           registry,
           effort: opts.effort,
-          cwd: opts.cwd,
+          cwd: worktreeCwds.get(op.id) ?? opts.cwd,
           mcpServerUrl: opts.mcpServerUrl,
           progressBaseDir: opts.progressBaseDir,
           abortSignal: opts.abortSignal,
