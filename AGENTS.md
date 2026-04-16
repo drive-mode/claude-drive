@@ -4,7 +4,7 @@ AI agent context for working in this repository.
 
 ## What This Project Is
 
-**claude-drive** is a standalone Node.js/TypeScript CLI that brings cursor-drive's multi-operator pair programming to the Claude Code CLI. It runs an MCP server on `:7891` that Claude Code reads tools from, and uses `@anthropic-ai/claude-agent-sdk@0.2.77` to execute operators as subagents.
+**claude-drive** is a standalone Node.js/TypeScript CLI that brings cursor-drive's multi-operator pair programming to the Claude Code CLI. It runs an MCP server on `:7891` that Claude Code reads tools from, and uses `@anthropic-ai/claude-agent-sdk@0.2.111` to execute operators as subagents.
 
 Ported from `../cursor-drive` (VS Code extension). ~60% of source adapted with VS Code APIs replaced by Node.js equivalents.
 
@@ -14,7 +14,7 @@ Ported from `../cursor-drive` (VS Code extension). ~60% of source adapted with V
 npm install          # Install dependencies
 npm run compile      # TypeScript → out/
 npm run watch        # Watch mode
-npm test             # Jest unit tests (176 tests, --experimental-vm-modules)
+npm test             # Jest unit tests (230 tests, --experimental-vm-modules)
 npm start            # node out/cli.js start
 ```
 
@@ -27,18 +27,29 @@ node out/cli.js run "add a readme"
 ## Architecture
 
 ```
-cli.ts (fail-fast SDK validation)
-       → driveMode + operatorRegistry (AbortController on dismiss)
-       → operatorManager (Agent SDK query(), AbortController per operator)
-       → mcpServer (localhost:7891, maxConcurrent enforcement)
-       → agentOutput (Ink TUI)
-       → tts (edgeTts → piper → say)
-       → worktreeManager (git worktree per operator)
-       → memoryStore + autoDream (typed memory, confidence decay, consolidation)
-       → checkpoint (session snapshots + fork)
-       → hooks (pre/post lifecycle events)
-       → skillLoader (dynamic skill registration)
-       → approvalGates (safety gates, per-operator throttling)
+cli.ts (fail-fast SDK validation, registers built-in agents)
+ → driveMode + operatorRegistry
+     - foreground/background executionMode, nesting, getTree/getChildren
+     - contextUsage + runPromise snapshotting
+     - AbortController on dismiss
+ → operatorManager
+     - ensureStartup() SDK pre-warm (0.2.89+ public in 0.2.111)
+     - buildQueryOptions() merges taskBudget / effort / agentProgressSummaries
+     - handles task_started / task_progress / memory_recall / status events
+ → agentDefinitionLoader + builtinAgents
+     - .md frontmatter agents from builtin / user / project scopes
+ → bestOfN (parallel N-way runs, pluggable scorer)
+ → progressFile (~/.claude-drive/subagents/<id>/)
+ → mcpServer (localhost:7891, maxConcurrent enforcement)
+ → agentOutput (Ink TUI, now with ProgressEvent)
+ → tts (edgeTts → piper → say)
+ → worktreeManager (git worktree per operator)
+ → memoryStore + autoDream + SDK memory_recall import
+ → checkpoint (session snapshots + fork)
+ → hooks (pre/post lifecycle events)
+ → skillLoader (dynamic skill registration)
+ → approvalGates (safety gates, per-operator throttling)
+ → frontmatter (shared YAML parser for skills + agent defs)
 ```
 
 ## Key Files
@@ -68,6 +79,11 @@ cli.ts (fail-fast SDK validation)
 | `src/store.ts` | JSON KV store (state persistence, atomic writes) |
 | `src/config.ts` | Config loader (`~/.claude-drive/config.json`), atomic writes |
 | `src/syncTypes.ts` | Shared types kept in sync with cursor-drive |
+| `src/frontmatter.ts` | Shared YAML frontmatter parser (skills + agent defs) |
+| `src/agentDefinitionLoader.ts` | Agent definition loader — builtin / user / project scopes |
+| `src/builtinAgents.ts` | Built-in agent definitions (`explore`, `bash`, `reviewer`) |
+| `src/bestOfN.ts` | Parallel best-of-N runs with pluggable scorer |
+| `src/progressFile.ts` | Append-only background progress log + atomic `last.json` |
 
 ## Coding Conventions
 
@@ -89,7 +105,31 @@ node out/cli.js config set tts.backend edgeTts
 node out/cli.js config set tts.enabled true
 node out/cli.js config set mcp.port 7891
 node out/cli.js config set operators.maxConcurrent 3
+
+# Phase 2/3 keys
+node out/cli.js config set operator.preWarm true              # SDK startup() pre-warm
+node out/cli.js config set operator.taskBudget 20000          # token budget (passthrough)
+node out/cli.js config set operator.defaultEffort medium      # low|medium|high|xhigh|max
+node out/cli.js config set operator.agentProgressSummaries true
+node out/cli.js config set operators.maxDepth 3               # nesting clamp
+node out/cli.js config set bestOfN.maxCount 4
+node out/cli.js config set memory.syncFromSdk true            # import SDK memory_recall
+node out/cli.js config set agents.directory "~/.claude-drive/agents"
 ```
+
+## New CLI commands
+
+```bash
+node out/cli.js agent list              # list builtin + user + project agent defs
+node out/cli.js agent show <name>       # print resolved JSON for one agent
+```
+
+## New MCP tools
+
+`operator_get_progress`, `operator_await`, `operator_context_usage`,
+`operator_tree`, `agent_list`, `agent_inspect`, `drive_best_of_n`.
+
+`drive_run_task` now also accepts `background`, `taskBudget`, `effort`, `parentId`, and `agent`.
 
 ## Sync with cursor-drive
 
@@ -108,7 +148,7 @@ When `../cursor-drive` changes key business logic, sync these files manually:
 - **Node.js**: v22 is pre-installed; no version manager setup needed.
 - **Standard commands**: See the `## Commands` section above — `npm install`, `npm run compile`, `npm test`, `npm start` are all you need.
 - **MCP server**: `npm start` (or `node out/cli.js start`) launches the MCP server on port 7891. It requires `npm run compile` first. The server uses SSE; plain JSON-only curl requests will get a "Not Acceptable" error — pass `Accept: application/json, text/event-stream` header when testing with curl.
-- **Tests run offline**: All 176 Jest tests are fully mocked — no API keys or external services needed.
+- **Tests run offline**: All 230 Jest tests are fully mocked — no API keys or external services needed.
 - **E2E / `run` command**: `node out/cli.js run "<task>"` requires a valid `ANTHROPIC_API_KEY` env var (it calls the Anthropic API via the Agent SDK). Unit tests do not require this key.
 - **Port file**: The server writes `~/.claude-drive/port` on start and deletes it on exit. If a previous server crashed, this stale file may cause `node out/cli.js port` to report an incorrect URL — just delete it and restart.
 - **No Docker, no databases**: This is a pure Node.js project with no external service dependencies for dev/test.
