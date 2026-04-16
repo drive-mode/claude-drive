@@ -12,9 +12,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm install          # Install dependencies
 npm run compile      # TypeScript → out/
 npm run watch        # Watch mode
+npm run lint         # Strict tsc check (no unused locals/params)
 npm start            # Start MCP server (node out/cli.js start)
-npm test             # Jest unit tests
+npm test             # Jest unit tests (272 tests, all mocked)
+npm run test:coverage
 ```
+
+## Engineering conventions
+
+See `docs/PRINCIPLES.md` and `CHANGELOG.md` for the review stages that
+aligned this codebase with the Unix principles (centralised paths, logger
+seam, zod-validated config, narrowed SDK types, etc.).
 
 One-shot task:
 ```bash

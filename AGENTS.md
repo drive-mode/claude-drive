@@ -14,9 +14,24 @@ Ported from `../cursor-drive` (VS Code extension). ~60% of source adapted with V
 npm install          # Install dependencies
 npm run compile      # TypeScript → out/
 npm run watch        # Watch mode
-npm test             # Jest unit tests (230 tests, --experimental-vm-modules)
+npm run lint         # tsc --noEmit --noUnusedLocals --noUnusedParameters
+npm test             # Jest unit tests (272 tests, --experimental-vm-modules)
+npm run test:coverage # Coverage reports under /opt/cursor/artifacts/coverage
 npm start            # node out/cli.js start
 ```
+
+## Engineering conventions
+
+See `docs/PRINCIPLES.md` for the full set. The short version:
+
+- Every path goes through `src/paths.ts` (honours `CLAUDE_DRIVE_HOME`).
+- Library code logs via `src/logger.ts`, never `console.*`. stdout is reserved
+  for CLI user-facing output and `--json` payloads.
+- No module-scope mutable `let`. Encapsulate state in a class with
+  `__resetForTests()` hooks.
+- Config values are zod-validated at load (`src/configSchema.ts`).
+- Prefer discriminated unions + control-flow narrowing over `as unknown` casts.
+- SDK mocks use `tests/_helpers/sdkMock.ts` (`installSdkMock`, `typicalRun`).
 
 One-shot task:
 
@@ -148,7 +163,7 @@ When `../cursor-drive` changes key business logic, sync these files manually:
 - **Node.js**: v22 is pre-installed; no version manager setup needed.
 - **Standard commands**: See the `## Commands` section above — `npm install`, `npm run compile`, `npm test`, `npm start` are all you need.
 - **MCP server**: `npm start` (or `node out/cli.js start`) launches the MCP server on port 7891. It requires `npm run compile` first. The server uses SSE; plain JSON-only curl requests will get a "Not Acceptable" error — pass `Accept: application/json, text/event-stream` header when testing with curl.
-- **Tests run offline**: All 230 Jest tests are fully mocked — no API keys or external services needed.
+- **Tests run offline**: All 272 Jest tests are fully mocked — no API keys or external services needed.
 - **E2E / `run` command**: `node out/cli.js run "<task>"` requires a valid `ANTHROPIC_API_KEY` env var (it calls the Anthropic API via the Agent SDK). Unit tests do not require this key.
 - **Port file**: The server writes `~/.claude-drive/port` on start and deletes it on exit. If a previous server crashed, this stale file may cause `node out/cli.js port` to report an incorrect URL — just delete it and restart.
 - **No Docker, no databases**: This is a pure Node.js project with no external service dependencies for dev/test.
