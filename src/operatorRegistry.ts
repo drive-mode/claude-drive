@@ -12,6 +12,21 @@ type SyncState = "idle" | "syncing" | "conflict" | "applying" | "error";
 export type OperatorStatus = "active" | "background" | "completed" | "merged" | "paused";
 export type OperatorRole = "implementer" | "reviewer" | "tester" | "researcher" | "planner";
 
+/** Claude Agent SDK effort level: `low | medium | high | xhigh | max`. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Whether an operator runs in the calling turn (foreground) or detached (background). */
+export type ExecutionMode = "foreground" | "background";
+
+/** Per-category + total context window usage reported by the SDK. */
+export interface ContextUsage {
+  total: number;
+  maxTokens?: number;
+  percentage?: number;
+  byCategory: Record<string, number>;
+  updatedAt: number;
+}
+
 export interface RoleTemplate {
   defaultPreset: PermissionPreset;
   description: string;
@@ -94,6 +109,23 @@ export interface OperatorContext {
   stats: OperatorStats;
   /** Controller to cancel in-flight tasks when operator is dismissed. */
   abortController?: AbortController;
+  /** Whether the operator blocks its caller (foreground) or runs detached (background). */
+  executionMode: ExecutionMode;
+  /** In-flight task promise (set by operatorManager.runOperator). */
+  runPromise?: Promise<void>;
+  /** Absolute path to this operator's progress directory (set for background runs). */
+  progressPath?: string;
+  /** Most recent context-usage snapshot. */
+  contextUsage?: ContextUsage;
+  /** Effort/thinking level passthrough for SDK `query()`. */
+  effort?: EffortLevel;
+  /** Agent-definition name that spawned this operator, if any. */
+  agentDefinitionName?: string;
+}
+
+export interface OperatorTreeNode {
+  op: OperatorContext;
+  children: OperatorTreeNode[];
 }
 
 export interface SpawnOptions {
@@ -101,6 +133,9 @@ export interface SpawnOptions {
   parentId?: string;
   depth?: number;
   role?: OperatorRole;
+  executionMode?: ExecutionMode;
+  effort?: EffortLevel;
+  agentDefinitionName?: string;
 }
 
 function getNamePool(): string[] {
@@ -143,7 +178,16 @@ export class OperatorRegistry {
       console.warn(`[OperatorRegistry] spawn: parentId "${requestedParentId}" not found; spawning without parent.`);
     }
 
-    const depth = options?.depth ?? (parentId ? (this.operators.get(parentId)!.depth) + 1 : 0);
+    const rawDepth = options?.depth ?? (parentId ? (this.operators.get(parentId)!.depth) + 1 : 0);
+    const maxDepth = Math.max(0, getConfig<number>("operators.maxDepth") ?? 3);
+    let depth = rawDepth;
+    let depthClamped = false;
+    if (rawDepth > maxDepth) {
+      depth = maxDepth;
+      depthClamped = true;
+      console.warn(`[OperatorRegistry] spawn: depth ${rawDepth} exceeds maxDepth ${maxDepth}; clamping.`);
+    }
+
     const role = options?.role;
     const roleTemplate = role ? ROLE_TEMPLATES[role] : undefined;
 
@@ -154,12 +198,22 @@ export class OperatorRegistry {
       preset = minPreset(preset, this.operators.get(parentId)!.permissionPreset);
     }
 
+    // Default executionMode: foreground for the first root operator, background otherwise.
+    // Callers may override via options.executionMode.
+    const executionMode: ExecutionMode =
+      options?.executionMode
+      ?? (!parentId && !this.foregroundId ? "foreground" : "background");
+
     const op: OperatorContext = {
       id, name: resolvedName, voice: undefined, task, status: "active",
       createdAt: Date.now(), memory: [], visibility: "shared",
       depth, parentId, permissionPreset: preset, role, systemHint: roleTemplate?.systemHint,
       stats: { totalCostUsd: 0, totalDurationMs: 0, totalApiDurationMs: 0, totalTurns: 0, taskCount: 0 },
+      executionMode,
+      effort: options?.effort,
+      agentDefinitionName: options?.agentDefinitionName,
     };
+    if (depthClamped) op.memory.push(`[clamped-depth] requested=${rawDepth} maxDepth=${maxDepth}`);
     this.operators.set(id, op);
     this.nameToId.set(resolvedName.toLowerCase(), id);
 
@@ -398,6 +452,57 @@ export class OperatorRegistry {
       totals.taskCount += op.stats.taskCount;
     }
     return totals;
+  }
+
+  /** Return direct children of the given operator (does not recurse). */
+  getChildren(idOrName: string): OperatorContext[] {
+    const parent = this.findByNameOrId(idOrName);
+    if (!parent) return [];
+    return [...this.operators.values()].filter((o) => o.parentId === parent.id);
+  }
+
+  /**
+   * Return the operator tree. If rootIdOrName is omitted, returns the forest of all
+   * root-level operators (those without a parent).
+   */
+  getTree(rootIdOrName?: string): OperatorTreeNode[] {
+    const build = (op: OperatorContext): OperatorTreeNode => ({
+      op,
+      children: this.getChildren(op.id).map(build),
+    });
+    if (rootIdOrName) {
+      const root = this.findByNameOrId(rootIdOrName);
+      return root ? [build(root)] : [];
+    }
+    return [...this.operators.values()]
+      .filter((o) => !o.parentId)
+      .map(build);
+  }
+
+  /** Update the stored context-usage snapshot for an operator. */
+  updateContextUsage(idOrName: string, usage: ContextUsage): boolean {
+    const op = this.findByNameOrId(idOrName);
+    if (!op) return false;
+    op.contextUsage = usage;
+    this.emitChange();
+    return true;
+  }
+
+  /** Attach an in-flight run promise to an operator (used by operatorManager). */
+  setRunPromise(idOrName: string, promise: Promise<void>): boolean {
+    const op = this.findByNameOrId(idOrName);
+    if (!op) return false;
+    op.runPromise = promise;
+    return true;
+  }
+
+  /** Mark an operator's status directly. Primarily used by runOperator on completion. */
+  markStatus(idOrName: string, status: OperatorStatus): boolean {
+    const op = this.findByNameOrId(idOrName);
+    if (!op) return false;
+    op.status = status;
+    this.emitChange();
+    return true;
   }
 
   static getRoleTemplate(role: OperatorRole): RoleTemplate { return ROLE_TEMPLATES[role]; }

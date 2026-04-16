@@ -101,3 +101,39 @@ export function exportAll(): MemoryEntry[] {
 export function importBulk(entries: MemoryEntry[]): void {
   memoryStore.importBulk(entries);
 }
+
+/**
+ * Import an SDK `system/memory_recall` event into the local memory store as
+ * low-confidence `context`-kind entries. Each recalled memory becomes one entry,
+ * tagged with its scope (`personal`/`team`) and the mode (`select`/`synthesize`).
+ *
+ * Returns the freshly-added entries.
+ */
+export function importSdkMemoryEvent(
+  operatorId: string,
+  event: {
+    mode?: "select" | "synthesize";
+    memories?: Array<{ path: string; scope?: string; content?: string }>;
+  },
+): MemoryEntry[] {
+  if (!event || !Array.isArray(event.memories)) return [];
+  const added: MemoryEntry[] = [];
+  const baseConfidence = Math.max(
+    0,
+    Math.min(1, (getConfig<number>("memory.defaultConfidence") ?? 0.8) * 0.75),
+  );
+  for (const m of event.memories) {
+    const content = m.content?.trim() || `memory_recall: ${m.path}`;
+    added.push(
+      memoryStore.add({
+        kind: "context",
+        content,
+        source: "sdk:memory_recall",
+        operatorId,
+        tags: ["sdk-memory", ...(m.scope ? [m.scope] : []), ...(event.mode ? [event.mode] : [])],
+        confidence: baseConfidence,
+      }),
+    );
+  }
+  return added;
+}

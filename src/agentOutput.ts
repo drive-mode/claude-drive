@@ -26,13 +26,20 @@ export interface DecisionEvent {
 }
 export interface ChimeEvent { type: "chime"; name?: string; }
 export interface ClearEvent { type: "clear"; }
+export interface ProgressEvent {
+  type: "progress";
+  agent: string;
+  summary: string;
+  toolsUsed?: number;
+}
 
 export type DriveOutputEvent =
   | ActivityEvent
   | FileEvent
   | DecisionEvent
   | ChimeEvent
-  | ClearEvent;
+  | ClearEvent
+  | ProgressEvent;
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 
@@ -112,6 +119,13 @@ export class AgentOutputEmitter extends EventEmitter {
         const color = colorFor(event.agent);
         process.stdout.write(
           `${DIM}${ts()}${RESET} ${color}[${event.agent}]${RESET} ${BOLD}Decision:${RESET} ${event.text}\n`
+        );
+        break;
+      }
+      case "progress": {
+        const color = colorFor(event.agent);
+        process.stdout.write(
+          `${DIM}${ts()}${RESET} ${color}[${event.agent}]${RESET} ${DIM}»${RESET} ${event.summary}\n`,
         );
         break;
       }

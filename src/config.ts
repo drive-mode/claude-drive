@@ -26,8 +26,27 @@ const DEFAULTS: Record<string, unknown> = {
   // Operators
   "operators.maxConcurrent": 3,
   "operators.maxSubagents": 2,
+  "operators.maxDepth": 3,
   "operators.namePool": [],  // empty = numbered "Operator 1", "Operator 2", …; set custom names to override
   "operators.defaultPermissionPreset": "standard",
+
+  // Operator runtime (Agent SDK query options)
+  "operator.preWarm": true,
+  "operator.taskBudget": undefined,
+  "operator.agentProgressSummaries": true,
+  "operator.defaultEffort": undefined,
+  "operator.maxBudgetUsd": undefined,
+  "operator.awaitTimeoutMs": 300000,
+
+  // Best-of-N
+  "bestOfN.enabled": true,
+  "bestOfN.maxCount": 4,
+
+  // Agent definitions
+  "agents.directory": "~/.claude-drive/agents",
+
+  // Memory (SDK event import)
+  "memory.syncFromSdk": true,
 
   // MCP server
   "mcp.port": 7891,
