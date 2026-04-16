@@ -10,10 +10,17 @@ import type {
   PermissionPreset,
 } from "./operatorRegistry.js";
 import type {
+  SDKMessage,
   SDKResultSuccess,
   SDKResultError,
   SDKSystemMessage,
   SDKRateLimitEvent,
+  SDKStatusMessage,
+  SDKTaskStartedMessage,
+  SDKTaskProgressMessage,
+  SDKTaskUpdatedMessage,
+  SDKMemoryRecallMessage,
+  SDKControlGetContextUsageResponse,
 } from "@anthropic-ai/claude-agent-sdk";
 import { logActivity, logFile, agentOutput } from "./agentOutput.js";
 import { logger } from "./logger.js";
@@ -108,9 +115,10 @@ export async function ensureStartup(): Promise<void> {
 
   startupPromise = (async () => {
     try {
-      const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
-        startup?: (params?: { initializeTimeoutMs?: number }) => Promise<unknown>;
-      };
+      // Narrow import: SDK 0.2.111 publishes `startup` but older mocks may not.
+      // Feature-detect rather than cast-to-any.
+      const sdk: { startup?: (params?: { initializeTimeoutMs?: number }) => Promise<unknown> } =
+        await import("@anthropic-ai/claude-agent-sdk");
       if (typeof sdk.startup === "function") {
         await sdk.startup({});
       }
@@ -299,69 +307,70 @@ export async function runOperator(
         break;
       }
 
-      const mAny = msg as { type?: string; subtype?: string };
+      // Narrow the SDK's union by discriminants. `msg` is typed as
+      // `SDKMessage` by the SDK; we bypass its strictness only where the
+      // canned stream in tests yields bare `unknown`, treating it as a
+      // superset. This removes all `as unknown` casts.
+      const m = msg as SDKMessage;
 
-      if (mAny.type === "system") {
-        if (mAny.subtype === "init") {
-          const sysMsg = msg as unknown as SDKSystemMessage & {
-            session_id?: string;
-            memory_paths?: string[];
-          };
+      if (m.type === "system") {
+        if (m.subtype === "init") {
+          const sysMsg = m as SDKSystemMessage & { memory_paths?: string[] };
           if (sysMsg.session_id) op.sessionId = sysMsg.session_id;
           // memory_paths arrived in SDK 0.2.105; surface them in op.memory as a note.
           const mPaths = sysMsg.memory_paths;
           if (Array.isArray(mPaths) && mPaths.length > 0) {
             op.memory.push(`[sdk-memory-paths] ${mPaths.join(", ")}`);
           }
-        } else if (mAny.subtype === "status") {
-          const sMsg = msg as unknown as { status?: string | null };
+        } else if (m.subtype === "status") {
+          const sMsg: SDKStatusMessage = m;
           if (sMsg.status === "requesting") {
             logActivity(op.name, "⋯ waiting on the API");
           } else if (sMsg.status === "compacting") {
             logActivity(op.name, "↻ compacting context");
           }
-        } else if (mAny.subtype === "task_started") {
-          const t = msg as unknown as { description?: string; task_id?: string };
+        } else if (m.subtype === "task_started") {
+          const t: SDKTaskStartedMessage = m;
           logActivity(op.name, `▶ subtask start: ${t.description ?? t.task_id ?? ""}`);
           if (isBackground) {
             // NOTE: spread payload first, then stamp our marker last so the
             // progress-file `type` is always "task_started" (not SDK's "system").
-            writeProgressEvent(op.id, { ...(t as object), type: "task_started" }, opts.progressBaseDir);
+            writeProgressEvent(op.id, { ...t, type: "task_started" }, opts.progressBaseDir);
           }
-        } else if (mAny.subtype === "task_progress" || mAny.subtype === "task_updated") {
-          const t = msg as unknown as { description?: string; summary?: string; last_tool_name?: string; usage?: object };
-          const line = t.summary ?? t.description ?? t.last_tool_name ?? "(progress)";
+        } else if (m.subtype === "task_progress" || m.subtype === "task_updated") {
+          const t: SDKTaskProgressMessage | SDKTaskUpdatedMessage = m;
+          const summary = "summary" in t ? t.summary : undefined;
+          const description = "description" in t ? t.description : undefined;
+          const lastTool = "last_tool_name" in t ? t.last_tool_name : undefined;
+          const line = summary ?? description ?? lastTool ?? "(progress)";
           agentOutput.emit("event", { type: "progress", agent: op.name, summary: line });
           logActivity(op.name, `» ${line}`);
           if (isBackground) {
-            const kind = mAny.subtype === "task_updated" ? "task_updated" as const : "task_progress" as const;
-            writeProgressEvent(op.id, { ...(t as object), type: kind }, opts.progressBaseDir);
+            const kind = m.subtype === "task_updated" ? "task_updated" as const : "task_progress" as const;
+            writeProgressEvent(op.id, { ...t, type: kind }, opts.progressBaseDir);
           }
-        } else if (mAny.subtype === "memory_recall") {
-          const m = msg as unknown as {
-            mode?: "select" | "synthesize";
-            memories?: Array<{ path: string; scope?: string; content?: string }>;
-          };
+        } else if (m.subtype === "memory_recall") {
+          const mr: SDKMemoryRecallMessage = m;
           if (getConfig<boolean>("memory.syncFromSdk") !== false) {
             try {
-              importSdkMemoryEvent(op.id, m);
+              importSdkMemoryEvent(op.id, mr);
             } catch (e) {
               logger.warn("[operatorManager] importSdkMemoryEvent failed:", e);
             }
           }
-          const count = m.memories?.length ?? 0;
-          logActivity(op.name, `🧠 memory_recall (${m.mode}, ${count} memor${count === 1 ? "y" : "ies"})`);
+          const count = mr.memories?.length ?? 0;
+          logActivity(op.name, `🧠 memory_recall (${mr.mode}, ${count} memor${count === 1 ? "y" : "ies"})`);
         }
-      } else if (mAny.type === "rate_limit_event") {
+      } else if (m.type === "rate_limit_event") {
         logActivity(op.name, "Rate limited — pausing");
         speak("Rate limited. Pausing.");
-        const rle = msg as unknown as SDKRateLimitEvent;
+        const rle: SDKRateLimitEvent = m;
         const info = rle.rate_limit_info;
         if (info) {
           logger.warn(`[OperatorManager] rate limit status: ${info.status}, resetsAt: ${info.resetsAt}`);
         }
-      } else if (mAny.type === "result") {
-        const resultMsg = msg as unknown as SDKResultSuccess | SDKResultError;
+      } else if (m.type === "result") {
+        const resultMsg: SDKResultSuccess | SDKResultError = m;
         if (!resultMsg.is_error && "result" in resultMsg && resultMsg.result !== undefined) {
           logActivity(op.name, (resultMsg as SDKResultSuccess).result);
         }
@@ -388,14 +397,16 @@ export async function runOperator(
       }
     }
 
-    // Best-effort context usage snapshot (requires streaming; may throw).
+    // Best-effort context usage snapshot. getContextUsage() lives on the
+    // streaming Query handle; in non-streaming mode the SDK's iterator does
+    // not expose it, so we narrow via a structural type and skip when absent.
     try {
-      const getUsage = (iterator as unknown as { getContextUsage?: () => Promise<{
-        categories: Array<{ name: string; tokens: number }>;
-        totalTokens: number; maxTokens: number; percentage: number;
-      }> }).getContextUsage;
+      const handle = iterator as AsyncGenerator<unknown, void, unknown> & {
+        getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+      };
+      const getUsage = handle.getContextUsage;
       if (typeof getUsage === "function" && opts.registry) {
-        const usage = await getUsage.call(iterator);
+        const usage = await getUsage.call(handle);
         const byCategory: Record<string, number> = {};
         for (const c of usage.categories ?? []) byCategory[c.name] = c.tokens;
         const snapshot: ContextUsage = {
