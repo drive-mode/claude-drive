@@ -1,6 +1,7 @@
 import os from "os";
-import path from "path";
-import { getPortFilePath, readPortFile } from "../src/mcpServer.js";
+import { getPortFilePath, readPortFile, buildMcpServer } from "../src/mcpServer.js";
+import { OperatorRegistry } from "../src/operatorRegistry.js";
+import { createDriveModeManager } from "../src/driveMode.js";
 
 describe("getPortFilePath()", () => {
   it("returns a path ending in 'port'", () => {
@@ -37,5 +38,43 @@ describe("readPortFile()", () => {
     // readPortFile catches errors internally and returns undefined
     // This just verifies it doesn't throw
     expect(() => readPortFile()).not.toThrow();
+  });
+});
+
+describe("buildMcpServer — registered tools", () => {
+  function names(): string[] {
+    const registry = new OperatorRegistry();
+    const driveMode = createDriveModeManager();
+    const server = buildMcpServer({ port: 0, registry, driveMode });
+    // The MCP McpServer instance exposes its registered tools via an internal
+    // `_registeredTools` map (object keyed by name). We access it defensively.
+    const internals = server as unknown as { _registeredTools?: Record<string, unknown> };
+    const map = internals._registeredTools ?? {};
+    return Object.keys(map).sort();
+  }
+
+  it("registers all new Phase 2/3 tools", () => {
+    const ns = names();
+    // Sanity: existing well-known tools still present.
+    expect(ns).toEqual(expect.arrayContaining([
+      "drive_run_task",
+      "drive_get_state",
+      "operator_spawn",
+      "operator_list",
+    ]));
+    // New tools introduced by this PR.
+    expect(ns).toEqual(expect.arrayContaining([
+      "operator_get_progress",
+      "operator_await",
+      "operator_context_usage",
+      "operator_tree",
+      "agent_list",
+      "agent_inspect",
+      "drive_best_of_n",
+    ]));
+  });
+
+  it("registers at least 45 tools (sanity bound for future regressions)", () => {
+    expect(names().length).toBeGreaterThanOrEqual(45);
   });
 });

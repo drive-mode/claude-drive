@@ -78,7 +78,7 @@ export interface McpServerOptions {
 // Map of sessionId → { transport, server }
 const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
 
-function buildMcpServer(opts: McpServerOptions): McpServer {
+export function buildMcpServer(opts: McpServerOptions): McpServer {
   const { registry, driveMode } = opts;
   const server = new McpServer({ name: "claude-drive", version: "0.1.0" });
 
