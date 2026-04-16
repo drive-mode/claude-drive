@@ -6,8 +6,9 @@
 import fs from "fs";
 import { atomicWriteJSON } from "./atomicWrite.js";
 import { configFile } from "./paths.js";
+import { validateConfig, validateConfigValue } from "./configSchema.js";
 // NOTE: do NOT import logger — logger imports config; the import cycle would
-// unload one of them. Use stderr directly for the single failure path here.
+// unload one of them. Use stderr directly for the failure paths here.
 
 // Defaults mirror cursorDrive.* settings schema
 const DEFAULTS: Record<string, unknown> = {
@@ -128,7 +129,15 @@ function loadFile(): void {
   try {
     const p = configFile();
     if (fs.existsSync(p)) {
-      fileConfig = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const raw = JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+      const validated = validateConfig(raw);
+      fileConfig = validated.parsed;
+      if (validated.errors.length > 0) {
+        const summary = validated.errors
+          .map((e) => `${e.key}=${JSON.stringify(e.value)} (${e.message})`)
+          .join("; ");
+        process.stderr.write(`[config] Ignoring ${validated.errors.length} invalid value(s): ${summary}\n`);
+      }
     }
   } catch {
     fileConfig = {};
@@ -158,8 +167,14 @@ export function getConfig<T>(key: string): T {
 
 /** Write a value to the persistent config file. */
 export function saveConfig(key: string, value: unknown): void {
+  // Validate explicitly-set values. Unknown keys pass through untouched.
+  const v = validateConfigValue(key, value);
+  if (!v.ok) {
+    process.stderr.write(`[config] Rejecting invalid value for ${key}: ${v.message}\n`);
+    return;
+  }
   loadFile();
-  fileConfig[key] = value;
+  fileConfig[key] = v.value;
   try {
     atomicWriteJSON(configFile(), fileConfig);
   } catch (e) {
