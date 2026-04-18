@@ -40,10 +40,12 @@ export type {
   OperatorTreeNode,
   OperatorVisibility,
   PermissionPreset,
+  SerializableOperator,
   SpawnOptions,
   SyncState,
 } from "./registry/types.js";
-export { ROLE_TEMPLATES, minPreset } from "./registry/roles.js";
+export { toSerializable } from "./registry/types.js";
+export { ROLE_TEMPLATES, minPreset, parseRole, parsePreset } from "./registry/roles.js";
 export type { RoleTemplate } from "./registry/roles.js";
 
 function getNamePool(): string[] {

@@ -88,6 +88,20 @@ export interface OperatorTreeNode {
   children: OperatorTreeNode[];
 }
 
+/**
+ * `OperatorContext` minus non-serializable runtime handles (AbortController,
+ * Promise). Used by checkpoint / session persistence so JSON.stringify never
+ * has to walk a live AbortController.
+ */
+export type SerializableOperator = Omit<OperatorContext, "abortController" | "runPromise">;
+
+/** Strip non-serializable fields from a live OperatorContext. */
+export function toSerializable(op: OperatorContext): SerializableOperator {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { abortController, runPromise, ...rest } = op;
+  return rest;
+}
+
 export interface SpawnOptions {
   preset?: PermissionPreset;
   parentId?: string;

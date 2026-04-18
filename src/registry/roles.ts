@@ -51,3 +51,15 @@ const PRESET_ORDER: PermissionPreset[] = ["readonly", "standard", "full"];
 export function minPreset(a: PermissionPreset, b: PermissionPreset): PermissionPreset {
   return PRESET_ORDER.indexOf(a) <= PRESET_ORDER.indexOf(b) ? a : b;
 }
+
+/** Validate and narrow a CLI/MCP-supplied role string. Returns `undefined` if invalid. */
+export function parseRole(value: string | undefined): import("./types.js").OperatorRole | undefined {
+  if (!value) return undefined;
+  return value in ROLE_TEMPLATES ? (value as import("./types.js").OperatorRole) : undefined;
+}
+
+/** Validate and narrow a CLI/MCP-supplied preset string. Returns `undefined` if invalid. */
+export function parsePreset(value: string | undefined): PermissionPreset | undefined {
+  if (!value) return undefined;
+  return (PRESET_ORDER as readonly string[]).includes(value) ? (value as PermissionPreset) : undefined;
+}

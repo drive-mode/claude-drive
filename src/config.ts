@@ -120,6 +120,24 @@ const DEFAULTS: Record<string, unknown> = {
   "dream.pruneThreshold": 0.2,
   "dream.mergeThreshold": 0.7,
   "dream.maxAgeMs": 604800000,       // 7 days
+
+  // Reflection gates (AutoResearch pattern)
+  "reflection.enabled": true,
+  "reflection.rulesFile": "~/.claude-drive/reflection-rules.json",
+  "reflection.reflectorModel": "haiku",
+
+  // Evaluation harness
+  "evaluation.scenariosDir": "~/.claude-drive/eval-scenarios",
+  "evaluation.resultsDir": "~/.claude-drive/eval-results",
+  "evaluation.defaultTimeoutMs": 60000,
+  "evaluation.passThreshold": 0.7,
+
+  // Prompt optimizer (AutoResearch loop)
+  "optimizer.enabled": true,
+  "optimizer.maxIterations": 20,
+  "optimizer.improvementThreshold": 0.02,
+  "optimizer.checkpointEvery": 5,
+  "optimizer.mutationModel": "claude-haiku-4-5-20251001",
 };
 
 /**
@@ -163,8 +181,16 @@ class ConfigStore {
   get<T>(key: string): T {
     if (key in this.runtimeFlags) return this.runtimeFlags[key] as T;
 
+    // Env override: CLAUDE_DRIVE_TTS_BACKEND etc. Coerce to the type of the
+    // registered default so numeric and boolean keys work from the env.
     const envKey = "CLAUDE_DRIVE_" + key.toUpperCase().replace(/\./g, "_");
-    if (process.env[envKey] !== undefined) return process.env[envKey] as unknown as T;
+    const envVal = process.env[envKey];
+    if (envVal !== undefined) {
+      const defaultVal = DEFAULTS[key];
+      if (typeof defaultVal === "number") return Number(envVal) as unknown as T;
+      if (typeof defaultVal === "boolean") return (envVal === "true" || envVal === "1") as unknown as T;
+      return envVal as unknown as T;
+    }
 
     if (key in this.fileConfig) return this.fileConfig[key] as T;
     if (key in DEFAULTS) return DEFAULTS[key] as T;

@@ -29,6 +29,8 @@ import { getConfig } from "./config.js";
 import { buildMemoryContext, importSdkMemoryEvent } from "./memoryManager.js";
 import { hookRegistry } from "./hooks.js";
 import { writeProgressEvent } from "./progressFile.js";
+import { buildReflectionHooks, buildReflectorAgent, buildBestPracticesAgent } from "./reflectionGate.js";
+import type { ReflectionHooks } from "./reflectionGate.js";
 
 // ── Tool permission mapping ─────────────────────────────────────────────────
 
@@ -192,9 +194,16 @@ export function buildQueryOptions(
     getConfig<number | undefined>("operator.maxBudgetUsd") ??
     getConfig<number | undefined>("operator.maxBudgetUsd");
 
-  const subagentDefs = opts.allOperators
+  // Build operator subagent definitions (peer operators) and merge in
+  // reflection-pattern subagents (reflector + best-practices) when enabled.
+  const peerDefs = opts.allOperators
     ? buildSubagentDefs(opts.allOperators.filter((o) => o.id !== op.id))
     : {};
+  const reflectionEnabled = getConfig<boolean>("reflection.enabled") ?? true;
+  const reflectionAgents = reflectionEnabled
+    ? { reflector: buildReflectorAgent(), "best-practices": buildBestPracticesAgent() }
+    : {};
+  const subagentDefs = { ...peerDefs, ...reflectionAgents };
 
   const taskBudget = resolveTaskBudget(opts);
   const effort = resolveEffort(op, opts);
@@ -217,6 +226,46 @@ export function buildQueryOptions(
   // Silence unused-var when `task` is passed purely for future introspection.
   void task;
   return options;
+}
+
+/**
+ * Build the merged hooks object (reflection + built-in PostToolUse + custom).
+ * Exposed separately so `runOperator` can attach it to the live query call.
+ */
+export function buildQueryHooks(op: OperatorContext): Record<string, unknown> {
+  const reflectionEnabled = getConfig<boolean>("reflection.enabled") ?? true;
+  const reflectionHooks: ReflectionHooks = reflectionEnabled
+    ? buildReflectionHooks(op.role)
+    : {};
+  const builtinPostToolUse = [
+    {
+      matcher: "Edit|Write",
+      hooks: [
+        async (input: unknown) => {
+          const filePath = (input as { tool_input?: { file_path?: string } }).tool_input?.file_path;
+          if (filePath) logFile(op.name, filePath, "edited");
+          return {};
+        },
+      ],
+    },
+    {
+      matcher: "Bash",
+      hooks: [
+        async (input: unknown) => {
+          const cmd = (input as { tool_input?: { command?: string } }).tool_input?.command;
+          if (cmd) logActivity(op.name, `$ ${cmd.slice(0, 120)}`);
+          return {};
+        },
+      ],
+    },
+  ];
+  return {
+    ...reflectionHooks,
+    PostToolUse: [
+      ...(reflectionHooks.PostToolUse ?? []),
+      ...builtinPostToolUse,
+    ],
+  };
 }
 
 /**
@@ -269,34 +318,12 @@ export async function runOperator(
 
     // ts-expect: SDK options type is strict, buildQueryOptions is intentionally widened
     // to keep a test-friendly return value.
+    type SdkOptions = NonNullable<Parameters<typeof queryFn>[0]["options"]>;
     const iterator = queryFn({
       prompt: task,
       options: {
-        ...(queryOptions as Parameters<typeof queryFn>[0]["options"]),
-        hooks: {
-          PostToolUse: [
-            {
-              matcher: "Edit|Write",
-              hooks: [
-                async (input: unknown) => {
-                  const filePath = (input as { tool_input?: { file_path?: string } }).tool_input?.file_path;
-                  if (filePath) logFile(op.name, filePath, "edited");
-                  return {};
-                },
-              ],
-            },
-            {
-              matcher: "Bash",
-              hooks: [
-                async (input: unknown) => {
-                  const cmd = (input as { tool_input?: { command?: string } }).tool_input?.command;
-                  if (cmd) logActivity(op.name, `$ ${cmd.slice(0, 120)}`);
-                  return {};
-                },
-              ],
-            },
-          ],
-        },
+        ...(queryOptions as SdkOptions),
+        hooks: buildQueryHooks(op) as SdkOptions["hooks"],
       },
     });
 

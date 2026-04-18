@@ -5,7 +5,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import type { OperatorContext } from "./operatorRegistry.js";
+import type { SerializableOperator } from "./operatorRegistry.js";
 import type { DriveOutputEvent } from "./agentOutput.js";
 import { atomicWriteJSON } from "./atomicWrite.js";
 
@@ -16,7 +16,7 @@ export interface SessionSnapshot {
   createdAt: number;
   name?: string;
   driveMode: { active: boolean; subMode: string };
-  operators: OperatorContext[];
+  operators: SerializableOperator[];
   activityLog: DriveOutputEvent[];
 }
 

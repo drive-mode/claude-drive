@@ -14,7 +14,7 @@ export interface DriveState {
   subMode: DriveSubMode;
 }
 
-function isSubMode(value: unknown): value is DriveSubMode {
+export function isSubMode(value: unknown): value is DriveSubMode {
   return value === "plan" || value === "agent" || value === "ask" || value === "debug" || value === "off";
 }
 

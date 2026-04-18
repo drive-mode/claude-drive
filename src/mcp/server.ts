@@ -11,6 +11,7 @@
 import http from "http";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -67,8 +68,39 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
   return server;
 }
 
-// Map of sessionId → { transport, server }
-const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+// Map of sessionId → { transport, server, lastAccess }
+// Bounded with TTL eviction to prevent leaks from long-lived processes.
+const MAX_SESSIONS = 100;
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes idle
+const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+
+const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer; lastAccess: number }>();
+
+function cleanupStaleSessions(): void {
+  const now = Date.now();
+  for (const [id, entry] of sessions) {
+    if (now - entry.lastAccess > SESSION_TTL_MS) {
+      sessions.delete(id);
+      void entry.transport.close().catch(() => { /* swallow */ });
+    }
+  }
+}
+
+function evictOldestSession(): void {
+  let oldestId: string | undefined;
+  let oldestTime = Infinity;
+  for (const [id, entry] of sessions) {
+    if (entry.lastAccess < oldestTime) {
+      oldestTime = entry.lastAccess;
+      oldestId = id;
+    }
+  }
+  if (oldestId) {
+    const entry = sessions.get(oldestId)!;
+    sessions.delete(oldestId);
+    void entry.transport.close().catch(() => { /* swallow */ });
+  }
+}
 
 export async function startMcpServerStdio(opts: Omit<McpServerOptions, "port">): Promise<void> {
   const server = buildMcpServer({ ...opts, port: 0 });
@@ -85,22 +117,32 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (req.method === "POST") {
-      const id = sessionId ?? `session-${Date.now()}`;
+      const id = sessionId ?? `session-${crypto.randomUUID()}`;
       let entry = sessions.get(id);
       if (!entry) {
+        // Make room before creating a new session: prune idle ones first,
+        // fall back to LRU eviction if still at the cap.
+        if (sessions.size >= MAX_SESSIONS) {
+          cleanupStaleSessions();
+          if (sessions.size >= MAX_SESSIONS) evictOldestSession();
+        }
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
         const server = buildMcpServer(opts);
         await server.connect(transport);
-        entry = { transport, server };
+        entry = { transport, server, lastAccess: Date.now() };
         sessions.set(id, entry);
       }
+      entry.lastAccess = Date.now();
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "GET" && sessionId) {
       const entry = sessions.get(sessionId);
       if (!entry) { res.writeHead(404); res.end(); return; }
+      entry.lastAccess = Date.now();
       await entry.transport.handleRequest(req, res);
     } else if (req.method === "DELETE" && sessionId) {
+      const deleted = sessions.get(sessionId);
       sessions.delete(sessionId);
+      if (deleted) void deleted.transport.close().catch(() => { /* swallow */ });
       res.writeHead(200); res.end();
     } else {
       res.writeHead(405); res.end();
@@ -134,7 +176,15 @@ export async function startMcpServer(opts: McpServerOptions): Promise<{ port: nu
 
   writePortFile(boundPort);
 
-  const cleanup = (): void => { deletePortFile(); };
+  // Periodically prune idle sessions; unref so cleanup never keeps the
+  // process alive on its own.
+  const sessionCleanupTimer = setInterval(cleanupStaleSessions, SESSION_CLEANUP_INTERVAL_MS);
+  sessionCleanupTimer.unref();
+
+  const cleanup = (): void => {
+    clearInterval(sessionCleanupTimer);
+    deletePortFile();
+  };
   process.once("SIGINT", cleanup);
   process.once("SIGTERM", cleanup);
   process.once("exit", cleanup);
