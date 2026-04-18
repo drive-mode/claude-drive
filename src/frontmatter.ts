@@ -14,7 +14,7 @@ export interface FrontmatterResult {
 }
 
 export function parseFrontmatter(content: string): FrontmatterResult {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { meta: {}, body: content.trim() };
 
   const rawYaml = match[1];
@@ -33,7 +33,16 @@ export function parseFrontmatter(content: string): FrontmatterResult {
     return trimmed;
   };
 
-  for (const line of lines) {
+  const nextNonEmptyLine = (fromIndex: number): string | undefined => {
+    for (let j = fromIndex + 1; j < lines.length; j++) {
+      const t = lines[j].trimEnd();
+      if (t) return t;
+    }
+    return undefined;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.trimEnd();
     if (!trimmed) continue;
 
@@ -75,9 +84,12 @@ export function parseFrontmatter(content: string): FrontmatterResult {
       const rawVal = kvMatch[2].trim();
 
       if (!rawVal) {
-        currentKey = key;
-        currentArray = [];
-        currentObj = null;
+        const next = nextNonEmptyLine(i);
+        if (next !== undefined && /^\s{2,}- /.test(next)) {
+          currentKey = key;
+          currentArray = [];
+          currentObj = null;
+        }
         continue;
       }
 

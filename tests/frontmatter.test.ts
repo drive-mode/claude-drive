@@ -37,6 +37,21 @@ describe("parseFrontmatter", () => {
     expect(params[0]).toEqual({ name: "foo", description: "Foo", required: true });
     expect(params[1]).toEqual({ name: "bar", description: "Bar" });
   });
+
+  test("empty key value does not become empty array when next line is another key", () => {
+    const src = `---\nname: s\ndescription: d\nmodel:\nother: x\n---\n`;
+    const { meta } = parseFrontmatter(src);
+    expect(meta.model).toBeUndefined();
+    expect(meta.other).toBe("x");
+  });
+
+  test("matches frontmatter when closing fence has no trailing newline", () => {
+    const src = "---\nname: test\ndescription: my agent\n---";
+    const { meta, body } = parseFrontmatter(src);
+    expect(meta.name).toBe("test");
+    expect(meta.description).toBe("my agent");
+    expect(body).toBe("");
+  });
 });
 
 describe("resolveTemplate", () => {
