@@ -4,8 +4,8 @@
  * merges similar entries, and promotes cross-operator patterns to shared.
  */
 import { memoryStore } from "./memoryStore.js";
-import type { MemoryEntry } from "./memoryStore.js";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 
 export interface DreamResult {
   pruned: number;
@@ -182,7 +182,7 @@ export class AutoDreamDaemon {
     this.timer = setInterval(() => {
       this.lastResult = runDreamCycle();
       if (this.lastResult.pruned || this.lastResult.merged || this.lastResult.promoted) {
-        console.log(`[auto-dream] ${this.lastResult.summary}`);
+        logger.info(`[auto-dream] ${this.lastResult.summary}`);
       }
     }, config.intervalMs);
 
@@ -191,7 +191,7 @@ export class AutoDreamDaemon {
       if (this.running) {
         this.lastResult = runDreamCycle();
         if (this.lastResult.pruned || this.lastResult.merged || this.lastResult.promoted) {
-          console.log(`[auto-dream] ${this.lastResult.summary}`);
+          logger.info(`[auto-dream] ${this.lastResult.summary}`);
         }
       }
     }, 5000);

@@ -4,11 +4,11 @@
  * Replaces vscode.workspace.getConfiguration("cursorDrive.*")
  */
 import fs from "fs";
-import path from "path";
-import os from "os";
 import { atomicWriteJSON } from "./atomicWrite.js";
-
-const CONFIG_FILE = path.join(os.homedir(), ".claude-drive", "config.json");
+import { configFile } from "./paths.js";
+import { validateConfig, validateConfigValue } from "./configSchema.js";
+// NOTE: do NOT import logger — logger imports config; the import cycle would
+// unload one of them. Use stderr directly for the failure paths here.
 
 // Defaults mirror cursorDrive.* settings schema
 const DEFAULTS: Record<string, unknown> = {
@@ -26,8 +26,30 @@ const DEFAULTS: Record<string, unknown> = {
   // Operators
   "operators.maxConcurrent": 3,
   "operators.maxSubagents": 2,
+  "operators.maxDepth": 3,
   "operators.namePool": [],  // empty = numbered "Operator 1", "Operator 2", …; set custom names to override
   "operators.defaultPermissionPreset": "standard",
+
+  // Operator runtime (Agent SDK query options)
+  "operator.preWarm": true,
+  "operator.taskBudget": undefined,
+  "operator.agentProgressSummaries": true,
+  "operator.defaultEffort": undefined,
+  "operator.maxBudgetUsd": undefined,
+  "operator.awaitTimeoutMs": 300000,
+
+  // Best-of-N
+  "bestOfN.enabled": true,
+  "bestOfN.maxCount": 4,
+
+  // Agent definitions
+  "agents.directory": "~/.claude-drive/agents",
+
+  // Memory (SDK event import)
+  "memory.syncFromSdk": true,
+
+  // Logging
+  "log.level": "info",
 
   // MCP server
   "mcp.port": 7891,
@@ -118,54 +140,106 @@ const DEFAULTS: Record<string, unknown> = {
   "optimizer.mutationModel": "claude-haiku-4-5-20251001",
 };
 
-let fileConfig: Record<string, unknown> = {};
-let runtimeFlags: Record<string, unknown> = {};
+/**
+ * Encapsulates the two mutable layers (file-backed + runtime flags) that used
+ * to be free-floating module-level `let`s. The default singleton is the one
+ * exposed via the `setFlag`/`getConfig`/`saveConfig` free functions below.
+ */
+class ConfigStore {
+  private fileConfig: Record<string, unknown> = {};
+  private runtimeFlags: Record<string, unknown> = {};
 
-function loadFile(): void {
-  try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+  constructor() {
+    this.load();
+  }
+
+  load(): void {
+    try {
+      const p = configFile();
+      if (fs.existsSync(p)) {
+        const raw = JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+        const validated = validateConfig(raw);
+        this.fileConfig = validated.parsed;
+        if (validated.errors.length > 0) {
+          const summary = validated.errors
+            .map((e) => `${e.key}=${JSON.stringify(e.value)} (${e.message})`)
+            .join("; ");
+          process.stderr.write(`[config] Ignoring ${validated.errors.length} invalid value(s): ${summary}\n`);
+        }
+      } else {
+        this.fileConfig = {};
+      }
+    } catch {
+      this.fileConfig = {};
     }
-  } catch {
-    fileConfig = {};
+  }
+
+  setFlag(key: string, value: unknown): void {
+    this.runtimeFlags[key] = value;
+  }
+
+  get<T>(key: string): T {
+    if (key in this.runtimeFlags) return this.runtimeFlags[key] as T;
+
+    // Env override: CLAUDE_DRIVE_TTS_BACKEND etc. Coerce to the type of the
+    // registered default so numeric and boolean keys work from the env.
+    const envKey = "CLAUDE_DRIVE_" + key.toUpperCase().replace(/\./g, "_");
+    const envVal = process.env[envKey];
+    if (envVal !== undefined) {
+      const defaultVal = DEFAULTS[key];
+      if (typeof defaultVal === "number") return Number(envVal) as unknown as T;
+      if (typeof defaultVal === "boolean") return (envVal === "true" || envVal === "1") as unknown as T;
+      return envVal as unknown as T;
+    }
+
+    if (key in this.fileConfig) return this.fileConfig[key] as T;
+    if (key in DEFAULTS) return DEFAULTS[key] as T;
+
+    return undefined as unknown as T;
+  }
+
+  save(key: string, value: unknown): void {
+    const v = validateConfigValue(key, value);
+    if (!v.ok) {
+      process.stderr.write(`[config] Rejecting invalid value for ${key}: ${v.message}\n`);
+      return;
+    }
+    this.load();
+    this.fileConfig[key] = v.value;
+    try {
+      atomicWriteJSON(configFile(), this.fileConfig);
+    } catch (e) {
+      process.stderr.write(`[config] Failed to save: ${String(e)}\n`);
+    }
+  }
+
+  /** Test-only: reset both layers. */
+  __resetForTests(): void {
+    this.fileConfig = {};
+    this.runtimeFlags = {};
   }
 }
 
-loadFile();
+/** The default, process-wide config store. */
+const defaultStore = new ConfigStore();
 
 /** Override a config value at runtime (e.g., from CLI flags). */
 export function setFlag(key: string, value: unknown): void {
-  runtimeFlags[key] = value;
+  defaultStore.setFlag(key, value);
 }
 
 /** Get a config value by dot-path key (e.g., "tts.backend"). */
 export function getConfig<T>(key: string): T {
-  if (key in runtimeFlags) return runtimeFlags[key] as T;
-
-  // Check env var: "tts.backend" → "CLAUDE_DRIVE_TTS_BACKEND"
-  const envKey = "CLAUDE_DRIVE_" + key.toUpperCase().replace(/\./g, "_");
-  if (process.env[envKey] !== undefined) {
-    const raw = process.env[envKey]!;
-    // Coerce env string to match the type of the default value
-    const defaultVal = DEFAULTS[key];
-    if (typeof defaultVal === "number") return Number(raw) as unknown as T;
-    if (typeof defaultVal === "boolean") return (raw === "true" || raw === "1") as unknown as T;
-    return raw as unknown as T;
-  }
-
-  if (key in fileConfig) return fileConfig[key] as T;
-  if (key in DEFAULTS) return DEFAULTS[key] as T;
-
-  return undefined as unknown as T;
+  return defaultStore.get<T>(key);
 }
 
 /** Write a value to the persistent config file. */
 export function saveConfig(key: string, value: unknown): void {
-  loadFile();
-  fileConfig[key] = value;
-  try {
-    atomicWriteJSON(CONFIG_FILE, fileConfig);
-  } catch (e) {
-    console.error("[config] Failed to save:", e);
-  }
+  defaultStore.save(key, value);
+}
+
+/** Test-only: reload file + clear runtime flags. */
+export function __resetConfigForTests(): void {
+  defaultStore.__resetForTests();
+  defaultStore.load();
 }

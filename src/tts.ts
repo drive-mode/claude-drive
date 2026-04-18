@@ -6,16 +6,41 @@
 import { speakPiper, stopPiper, isPiperAvailable } from "./piper.js";
 import { speakEdgeTts, stopEdgeTts, isEdgeTtsAvailable } from "./edgeTts.js";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 
 const SPOKEN_HISTORY_SIZE = 20;
-const spokenHistory: string[] = [];
-let inProgressUtterance: string | undefined;
-let onPlaybackEndedCallback: (() => void) | null = null;
 
-export function getSpokenHistory(): string[] { return [...spokenHistory]; }
-export function wasLastInterrupted(): boolean { return inProgressUtterance !== undefined; }
-export function clearSpokenHistory(): void { spokenHistory.length = 0; inProgressUtterance = undefined; }
-export function setOnPlaybackEnded(cb: () => void): void { onPlaybackEndedCallback = cb; }
+/**
+ * Encapsulated TTS runtime. Public free functions below (speak/stop/...) all
+ * route through the singleton `tts` instance; tests can call
+ * `__resetTtsForTests()` for isolation.
+ */
+class TtsRuntime {
+  readonly spokenHistory: string[] = [];
+  inProgress: string | undefined;
+  onPlaybackEnded: (() => void) | null = null;
+  sayModule: { default?: SayInstance } | null | undefined = undefined;
+
+  pushSpoken(speech: string): void {
+    this.spokenHistory.push(speech);
+    if (this.spokenHistory.length > SPOKEN_HISTORY_SIZE) this.spokenHistory.shift();
+  }
+
+  __resetForTests(): void {
+    this.spokenHistory.length = 0;
+    this.inProgress = undefined;
+    this.onPlaybackEnded = null;
+    this.sayModule = undefined;
+  }
+}
+
+const tts = new TtsRuntime();
+
+export function __resetTtsForTests(): void { tts.__resetForTests(); }
+export function getSpokenHistory(): string[] { return [...tts.spokenHistory]; }
+export function wasLastInterrupted(): boolean { return tts.inProgress !== undefined; }
+export function clearSpokenHistory(): void { tts.spokenHistory.length = 0; tts.inProgress = undefined; }
+export function setOnPlaybackEnded(cb: () => void): void { tts.onPlaybackEnded = cb; }
 
 export interface TtsConfig {
   enabled: boolean;
@@ -43,16 +68,15 @@ export function getTtsConfig(): TtsConfig {
 
 /** Lazy-loaded say module (ESM dynamic import). */
 type SayInstance = { speak: (text: string, voice?: string | null, speed?: number, cb?: (err: string) => void) => void; stop: () => void };
-let sayModule: { default?: SayInstance } | null | undefined = undefined;
 
 async function getSay(): Promise<SayInstance | null> {
-  if (sayModule !== undefined) return sayModule?.default ?? (sayModule as never);
+  if (tts.sayModule !== undefined) return tts.sayModule?.default ?? (tts.sayModule as never);
   try {
     const mod = await import("say");
-    sayModule = mod as { default?: SayInstance };
+    tts.sayModule = mod as { default?: SayInstance };
     return (mod.default ?? mod) as SayInstance;
   } catch {
-    sayModule = null;
+    tts.sayModule = null;
     return null;
   }
 }
@@ -65,17 +89,16 @@ function truncateToSentences(text: string, max: number): string {
 }
 
 function pushSpoken(speech: string): void {
-  spokenHistory.push(speech);
-  if (spokenHistory.length > SPOKEN_HISTORY_SIZE) spokenHistory.shift();
+  tts.pushSpoken(speech);
 }
 
 async function doSayFallback(speech: string, voice: string | undefined, speed: number): Promise<void> {
   const say = await getSay();
-  if (!say) { inProgressUtterance = undefined; return; }
+  if (!say) { tts.inProgress = undefined; return; }
   say.stop();
   say.speak(speech, voice ?? null, speed, (err: string) => {
-    if (err) console.error("[Drive TTS]", err);
-    inProgressUtterance = undefined;
+    if (err) logger.error("[Drive TTS]", err);
+    tts.inProgress = undefined;
     pushSpoken(speech);
   });
 }
@@ -85,11 +108,11 @@ export function speak(text: string, overrideVoice?: string): void {
   if (!cfg.enabled) return;
   const speech = truncateToSentences(text.trim(), cfg.maxSpokenSentences);
   if (!speech) return;
-  inProgressUtterance = speech;
+  tts.inProgress = speech;
 
   if (cfg.backend === "edgeTts" && isEdgeTtsAvailable()) {
     void speakEdgeTts(speech, cfg.volume, () => {
-      inProgressUtterance = undefined;
+      tts.inProgress = undefined;
       pushSpoken(speech);
     }).then((started) => {
       if (!started) void doSayFallback(speech, overrideVoice ?? cfg.voice, cfg.speed);
@@ -98,7 +121,7 @@ export function speak(text: string, overrideVoice?: string): void {
   }
 
   if (cfg.backend === "piper" && isPiperAvailable()) {
-    if (speakPiper(speech, cfg.volume, () => { inProgressUtterance = undefined; pushSpoken(speech); })) return;
+    if (speakPiper(speech, cfg.volume, () => { tts.inProgress = undefined; pushSpoken(speech); })) return;
   }
 
   void doSayFallback(speech, overrideVoice ?? cfg.voice, cfg.speed);
@@ -109,11 +132,11 @@ export function speakFull(text: string, voice?: string, speed?: number): void {
   if (!cfg.enabled) return;
   const trimmed = text.trim();
   if (!trimmed) return;
-  inProgressUtterance = trimmed;
+  tts.inProgress = trimmed;
 
   if (cfg.backend === "edgeTts" && isEdgeTtsAvailable()) {
     void speakEdgeTts(trimmed, cfg.volume, () => {
-      inProgressUtterance = undefined;
+      tts.inProgress = undefined;
       pushSpoken(trimmed);
     }).then((started) => {
       if (!started) void doSayFallback(trimmed, voice ?? cfg.voice, speed ?? cfg.speed);
@@ -122,7 +145,7 @@ export function speakFull(text: string, voice?: string, speed?: number): void {
   }
 
   if (cfg.backend === "piper" && isPiperAvailable()) {
-    if (speakPiper(trimmed, cfg.volume, () => { inProgressUtterance = undefined; pushSpoken(trimmed); })) return;
+    if (speakPiper(trimmed, cfg.volume, () => { tts.inProgress = undefined; pushSpoken(trimmed); })) return;
   }
 
   void doSayFallback(trimmed, voice ?? cfg.voice, speed ?? cfg.speed);
@@ -131,10 +154,9 @@ export function speakFull(text: string, voice?: string, speed?: number): void {
 export function stop(): void {
   stopPiper();
   stopEdgeTts();
-  if (inProgressUtterance) {
-    spokenHistory.push(`[interrupted] ${inProgressUtterance}`);
-    if (spokenHistory.length > SPOKEN_HISTORY_SIZE) spokenHistory.shift();
-    inProgressUtterance = undefined;
+  if (tts.inProgress) {
+    tts.pushSpoken(`[interrupted] ${tts.inProgress}`);
+    tts.inProgress = undefined;
   }
   void getSay().then((say) => say?.stop());
 }
@@ -142,10 +164,9 @@ export function stop(): void {
 export function isEnabled(): boolean { return getTtsConfig().enabled; }
 
 export function notifyPlaybackEnded(): void {
-  if (inProgressUtterance) {
-    spokenHistory.push(inProgressUtterance);
-    if (spokenHistory.length > SPOKEN_HISTORY_SIZE) spokenHistory.shift();
-    inProgressUtterance = undefined;
+  if (tts.inProgress) {
+    tts.pushSpoken(tts.inProgress);
+    tts.inProgress = undefined;
   }
-  onPlaybackEndedCallback?.();
+  tts.onPlaybackEnded?.();
 }

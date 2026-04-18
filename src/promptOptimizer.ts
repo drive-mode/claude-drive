@@ -9,15 +9,8 @@
  */
 import { getConfig } from "./config.js";
 import { atomicWriteJSON } from "./atomicWrite.js";
-import {
-  loadScenarios,
-  scoreOutput,
-  buildEvalResult,
-  buildSuiteResult,
-  compareResults,
-  saveResult,
-} from "./evaluationHarness.js";
-import type { EvalScenario, EvalSuiteResult } from "./evaluationHarness.js";
+import { scoreOutput } from "./evaluationHarness.js";
+import type { EvalScenario } from "./evaluationHarness.js";
 import type { ReflectionRule } from "./reflectionGate.js";
 import fs from "fs";
 import path from "path";

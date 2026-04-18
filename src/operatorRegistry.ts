@@ -1,125 +1,52 @@
 /**
  * operatorRegistry.ts — Operator lifecycle manager for claude-drive.
- * Adapted from cursor-drive: replaced vscode.workspace.getConfiguration → getConfig().
- * All other logic is unchanged.
+ *
+ * Types and role templates live in `registry/types.ts` and `registry/roles.ts`.
+ * This file owns the `OperatorRegistry` class — the mutable state + behaviour
+ * — plus the internal name-pool helper. Other modules import types from
+ * `./operatorRegistry.js` as before; the split is purely internal.
  */
 import { EventEmitter } from "events";
 import { getConfig } from "./config.js";
 import { hookRegistry } from "./hooks.js";
+import { logger } from "./logger.js";
+import { ROLE_TEMPLATES, minPreset } from "./registry/roles.js";
+import type {
+  ContextUsage,
+  EscalationEvent,
+  ExecutionMode,
+  OperatorContext,
+  OperatorRole,
+  OperatorStats,
+  OperatorStatus,
+  OperatorTreeNode,
+  OperatorVisibility,
+  PermissionPreset,
+  SpawnOptions,
+  SyncState,
+} from "./registry/types.js";
+import type { RoleTemplate } from "./registry/roles.js";
 
-type SyncState = "idle" | "syncing" | "conflict" | "applying" | "error";
-
-export type OperatorStatus = "active" | "background" | "completed" | "merged" | "paused";
-export type OperatorRole = "implementer" | "reviewer" | "tester" | "researcher" | "planner";
-
-export interface RoleTemplate {
-  defaultPreset: PermissionPreset;
-  description: string;
-  systemHint: string;
-}
-
-export const ROLE_TEMPLATES: Record<OperatorRole, RoleTemplate> = {
-  implementer: {
-    defaultPreset: "standard",
-    description: "Writes and modifies code",
-    systemHint: "You are an implementer. Write production-quality code, follow existing patterns, and report files touched via agent_screen_file.",
-  },
-  reviewer: {
-    defaultPreset: "readonly",
-    description: "Reviews code without modifying files",
-    systemHint: "You are a reviewer. Analyze code for bugs, risks, and quality. Do NOT edit files. Report findings via agent_screen_decision.",
-  },
-  tester: {
-    defaultPreset: "standard",
-    description: "Writes and runs tests",
-    systemHint: "You are a tester. Write test cases, run test suites, and verify behavior. Report test results via agent_screen_activity.",
-  },
-  researcher: {
-    defaultPreset: "readonly",
-    description: "Researches solutions and gathers context",
-    systemHint: "You are a researcher. Explore the codebase, read documentation, and synthesize findings. Do NOT edit production files.",
-  },
-  planner: {
-    defaultPreset: "readonly",
-    description: "Creates plans and breaks down tasks",
-    systemHint: "You are a planner. Analyze requirements, break tasks into actionable steps, and produce plan artifacts. Do NOT implement code.",
-  },
-};
-
-export interface EscalationEvent {
-  operatorId: string;
-  operatorName: string;
-  reason: string;
-  severity: "info" | "warning" | "critical";
-  timestamp: number;
-}
-
-export type OperatorVisibility = "isolated" | "shared" | "collaborative";
-export type PermissionPreset = "readonly" | "standard" | "full";
-
-const PRESET_ORDER: PermissionPreset[] = ["readonly", "standard", "full"];
-
-export function minPreset(a: PermissionPreset, b: PermissionPreset): PermissionPreset {
-  return PRESET_ORDER.indexOf(a) <= PRESET_ORDER.indexOf(b) ? a : b;
-}
-
-export function parseRole(value: string | undefined): OperatorRole | undefined {
-  if (!value) return undefined;
-  return value in ROLE_TEMPLATES ? (value as OperatorRole) : undefined;
-}
-
-export function parsePreset(value: string | undefined): PermissionPreset | undefined {
-  if (!value) return undefined;
-  return (PRESET_ORDER as readonly string[]).includes(value) ? (value as PermissionPreset) : undefined;
-}
-
-export interface OperatorStats {
-  totalCostUsd: number;
-  totalDurationMs: number;
-  totalApiDurationMs: number;
-  totalTurns: number;
-  taskCount: number;        // number of tasks completed
-}
-
-export interface OperatorContext {
-  id: string;
-  name: string;
-  voice: string | undefined;
-  task: string;
-  status: OperatorStatus;
-  createdAt: number;
-  memory: string[];
-  visibility: OperatorVisibility;
-  depth: number;
-  parentId?: string;
-  permissionPreset: PermissionPreset;
-  role?: OperatorRole;
-  systemHint?: string;
-  worktreePath?: string;
-  branchName?: string;
-  baseCommit?: string;
-  headCommit?: string;
-  syncState?: SyncState;
-  sessionId?: string;
-  stats: OperatorStats;
-  /** Controller to cancel in-flight tasks when operator is dismissed. */
-  abortController?: AbortController;
-}
-
-/** OperatorContext without non-serializable fields, safe for JSON persistence. */
-export type SerializableOperator = Omit<OperatorContext, "abortController">;
-
-export function toSerializable(op: OperatorContext): SerializableOperator {
-  const { abortController, ...rest } = op;
-  return rest;
-}
-
-export interface SpawnOptions {
-  preset?: PermissionPreset;
-  parentId?: string;
-  depth?: number;
-  role?: OperatorRole;
-}
+// Re-export everything so existing import paths keep working.
+export type {
+  ContextUsage,
+  EffortLevel,
+  EscalationEvent,
+  ExecutionMode,
+  OperatorContext,
+  OperatorRole,
+  OperatorStats,
+  OperatorStatus,
+  OperatorTreeNode,
+  OperatorVisibility,
+  PermissionPreset,
+  SerializableOperator,
+  SpawnOptions,
+  SyncState,
+} from "./registry/types.js";
+export { toSerializable } from "./registry/types.js";
+export { ROLE_TEMPLATES, minPreset, parseRole, parsePreset } from "./registry/roles.js";
+export type { RoleTemplate } from "./registry/roles.js";
 
 function getNamePool(): string[] {
   const pool = getConfig<string[]>("operators.namePool");
@@ -158,10 +85,19 @@ export class OperatorRegistry {
     const requestedParentId = options?.parentId;
     const parentId = requestedParentId && this.operators.has(requestedParentId) ? requestedParentId : undefined;
     if (requestedParentId && !parentId) {
-      console.warn(`[OperatorRegistry] spawn: parentId "${requestedParentId}" not found; spawning without parent.`);
+      logger.warn(`[OperatorRegistry] spawn: parentId "${requestedParentId}" not found; spawning without parent.`);
     }
 
-    const depth = options?.depth ?? (parentId ? (this.operators.get(parentId)!.depth) + 1 : 0);
+    const rawDepth = options?.depth ?? (parentId ? (this.operators.get(parentId)!.depth) + 1 : 0);
+    const maxDepth = Math.max(0, getConfig<number>("operators.maxDepth") ?? 3);
+    let depth = rawDepth;
+    let depthClamped = false;
+    if (rawDepth > maxDepth) {
+      depth = maxDepth;
+      depthClamped = true;
+      logger.warn(`[OperatorRegistry] spawn: depth ${rawDepth} exceeds maxDepth ${maxDepth}; clamping.`);
+    }
+
     const role = options?.role;
     const roleTemplate = role ? ROLE_TEMPLATES[role] : undefined;
 
@@ -172,12 +108,22 @@ export class OperatorRegistry {
       preset = minPreset(preset, this.operators.get(parentId)!.permissionPreset);
     }
 
+    // Default executionMode: foreground for the first root operator, background otherwise.
+    // Callers may override via options.executionMode.
+    const executionMode: ExecutionMode =
+      options?.executionMode
+      ?? (!parentId && !this.foregroundId ? "foreground" : "background");
+
     const op: OperatorContext = {
       id, name: resolvedName, voice: undefined, task, status: "active",
       createdAt: Date.now(), memory: [], visibility: "shared",
       depth, parentId, permissionPreset: preset, role, systemHint: roleTemplate?.systemHint,
       stats: { totalCostUsd: 0, totalDurationMs: 0, totalApiDurationMs: 0, totalTurns: 0, taskCount: 0 },
+      executionMode,
+      effort: options?.effort,
+      agentDefinitionName: options?.agentDefinitionName,
     };
+    if (depthClamped) op.memory.push(`[clamped-depth] requested=${rawDepth} maxDepth=${maxDepth}`);
     this.operators.set(id, op);
     this.nameToId.set(resolvedName.toLowerCase(), id);
 
@@ -416,6 +362,57 @@ export class OperatorRegistry {
       totals.taskCount += op.stats.taskCount;
     }
     return totals;
+  }
+
+  /** Return direct children of the given operator (does not recurse). */
+  getChildren(idOrName: string): OperatorContext[] {
+    const parent = this.findByNameOrId(idOrName);
+    if (!parent) return [];
+    return [...this.operators.values()].filter((o) => o.parentId === parent.id);
+  }
+
+  /**
+   * Return the operator tree. If rootIdOrName is omitted, returns the forest of all
+   * root-level operators (those without a parent).
+   */
+  getTree(rootIdOrName?: string): OperatorTreeNode[] {
+    const build = (op: OperatorContext): OperatorTreeNode => ({
+      op,
+      children: this.getChildren(op.id).map(build),
+    });
+    if (rootIdOrName) {
+      const root = this.findByNameOrId(rootIdOrName);
+      return root ? [build(root)] : [];
+    }
+    return [...this.operators.values()]
+      .filter((o) => !o.parentId)
+      .map(build);
+  }
+
+  /** Update the stored context-usage snapshot for an operator. */
+  updateContextUsage(idOrName: string, usage: ContextUsage): boolean {
+    const op = this.findByNameOrId(idOrName);
+    if (!op) return false;
+    op.contextUsage = usage;
+    this.emitChange();
+    return true;
+  }
+
+  /** Attach an in-flight run promise to an operator (used by operatorManager). */
+  setRunPromise(idOrName: string, promise: Promise<void>): boolean {
+    const op = this.findByNameOrId(idOrName);
+    if (!op) return false;
+    op.runPromise = promise;
+    return true;
+  }
+
+  /** Mark an operator's status directly. Primarily used by runOperator on completion. */
+  markStatus(idOrName: string, status: OperatorStatus): boolean {
+    const op = this.findByNameOrId(idOrName);
+    if (!op) return false;
+    op.status = status;
+    this.emitChange();
+    return true;
   }
 
   static getRoleTemplate(role: OperatorRole): RoleTemplate { return ROLE_TEMPLATES[role]; }

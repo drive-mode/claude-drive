@@ -8,6 +8,7 @@ import path from "path";
 import os from "os";
 import crypto from "crypto";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 import { atomicWriteJSON } from "./atomicWrite.js";
 
 export type MemoryKind = "fact" | "preference" | "correction" | "decision" | "context";
@@ -67,7 +68,7 @@ export class MemoryStore {
       fs.mkdirSync(dir, { recursive: true });
       atomicWriteJSON(MEMORY_FILE, [...this.entries.values()]);
     } catch (e) {
-      console.error("[memoryStore] Failed to flush:", e);
+      logger.error("[memoryStore] Failed to flush:", e);
     }
   }
 

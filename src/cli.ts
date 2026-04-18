@@ -12,7 +12,6 @@
  *   claude-drive tts "text"                # Speak text via TTS
  *   claude-drive config set <key> <value>  # Set a config value
  */
-import os from "os";
 import { Command } from "commander";
 import { createDriveModeManager, isSubMode, type DriveSubMode } from "./driveMode.js";
 import { OperatorRegistry, parseRole, parsePreset } from "./operatorRegistry.js";
@@ -27,6 +26,11 @@ import { hookRegistry } from "./hooks.js";
 import { skillRegistry, loadDefaultSkills } from "./skillLoader.js";
 import { AutoDreamDaemon } from "./autoDream.js";
 import { memoryStore } from "./memoryStore.js";
+import { loadAgentDefinitions, getAgentDefinition } from "./agentDefinitionLoader.js";
+import { registerBuiltins } from "./builtinAgents.js";
+
+// Register built-in agent definitions up-front so every command can see them.
+registerBuiltins();
 
 const planCostTracker = new PlanCostTracker();
 
@@ -69,9 +73,13 @@ program
     }
 
     // Initialize hooks, skills, and auto-dream
-    const hooksDir = (getConfig<string>("hooks.directory") ?? "~/.claude-drive/hooks").replace("~", os.homedir());
-    hookRegistry.loadFromDirectory(hooksDir);
-    hookRegistry.loadFromConfig();
+    {
+      const { hooksDir: defaultHooksDir, expandUserHome } = await import("./paths.js");
+      const configured = getConfig<string>("hooks.directory");
+      const dir = configured ? expandUserHome(configured) : defaultHooksDir();
+      hookRegistry.loadFromDirectory(dir);
+      hookRegistry.loadFromConfig();
+    }
     loadDefaultSkills();
     const dreamDaemon = new AutoDreamDaemon();
     dreamDaemon.start();
@@ -226,11 +234,30 @@ operatorCmd
 operatorCmd
   .command("list")
   .description("List active operators")
-  .action(() => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
     const ops = registry.getActive();
+    const fgId = registry.getForeground()?.id;
+    if (opts.json) {
+      console.log(JSON.stringify(
+        ops.map((o) => ({
+          id: o.id,
+          name: o.name,
+          status: o.status,
+          role: o.role,
+          preset: o.permissionPreset,
+          task: o.task,
+          isForeground: o.id === fgId,
+          executionMode: o.executionMode,
+        })),
+        null,
+        2,
+      ));
+      return;
+    }
     if (ops.length === 0) { console.log("No active operators."); return; }
     for (const op of ops) {
-      const fg = registry.getForeground()?.id === op.id ? " [fg]" : "";
+      const fg = fgId === op.id ? " [fg]" : "";
       console.log(`  ${op.name}${fg}  ${op.permissionPreset}  ${op.status}  ${op.task || "(no task)"}`);
     }
   });
@@ -273,7 +300,17 @@ modeCmd
 modeCmd
   .command("status")
   .description("Show current drive state")
-  .action(() => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
+    if (opts.json) {
+      console.log(JSON.stringify({
+        active: driveMode.active,
+        subMode: driveMode.subMode,
+        foregroundOperator: registry.getForeground()?.name ?? null,
+        activeCount: registry.getActive().length,
+      }, null, 2));
+      return;
+    }
     printStatus(driveMode.active, driveMode.subMode, registry.getForeground()?.name, registry.getActive().length - 1);
   });
 
@@ -389,6 +426,40 @@ skillCmd
     console.log(skill.prompt);
   });
 
+// ── agent ─────────────────────────────────────────────────────────────────
+
+const agentCmd = program.command("agent").description("Manage agent definitions");
+
+agentCmd
+  .command("list")
+  .description("List all agent definitions (builtin + user + project)")
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
+    const defs = loadAgentDefinitions();
+    if (opts.json) {
+      console.log(JSON.stringify(defs, null, 2));
+      return;
+    }
+    if (defs.length === 0) { console.log("No agent definitions."); return; }
+    for (const d of defs) {
+      const tags: string[] = [`[${d.scope ?? "user"}]`];
+      if (d.role) tags.push(`role=${d.role}`);
+      if (d.preset) tags.push(`preset=${d.preset}`);
+      if (d.effort) tags.push(`effort=${d.effort}`);
+      if (d.background) tags.push("background");
+      console.log(`  ${d.name} ${tags.join(" ")} — ${d.description}`);
+    }
+  });
+
+agentCmd
+  .command("show <name>")
+  .description("Show the full resolved agent definition")
+  .action((name: string) => {
+    const def = getAgentDefinition(name);
+    if (!def) { console.error(`[claude-drive] Agent not found: ${name}`); process.exitCode = 1; return; }
+    console.log(JSON.stringify(def, null, 2));
+  });
+
 // ── dream ─────────────────────────────────────────────────────────────────
 
 program
@@ -409,9 +480,23 @@ const sessionCmd = program.command("session").description("Session management");
 sessionCmd
   .command("list")
   .description("List saved sessions")
-  .action(async () => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action(async (opts: { json?: boolean }) => {
     const { listSessions } = await import("./sessionManager.js");
     const sessions = listSessions();
+    if (opts.json) {
+      console.log(JSON.stringify(
+        sessions.map((s) => ({
+          id: s.id,
+          name: s.name ?? null,
+          createdAt: s.createdAt,
+          operatorCount: s.operators.filter((o: { status: string }) => o.status !== "completed").length,
+        })),
+        null,
+        2,
+      ));
+      return;
+    }
     if (sessions.length === 0) { console.log("No saved sessions."); return; }
     for (const s of sessions) {
       const date = new Date(s.createdAt).toLocaleString();
@@ -461,8 +546,13 @@ const memoryCmd = program.command("memory").description("Memory management");
 memoryCmd
   .command("stats")
   .description("Show memory statistics")
-  .action(() => {
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action((opts: { json?: boolean }) => {
     const stats = memoryStore.stats();
+    if (opts.json) {
+      console.log(JSON.stringify(stats, null, 2));
+      return;
+    }
     console.log(`[claude-drive] Memory: ${stats.total} entries`);
     console.log(`  By kind: ${JSON.stringify(stats.byKind)}`);
     console.log(`  By operator: ${JSON.stringify(stats.byOperator)}`);
@@ -472,9 +562,14 @@ memoryCmd
   .command("list")
   .description("List recent memory entries")
   .option("--limit <n>", "Max entries", "20")
-  .action((opts: { limit: string }) => {
-    const { recall } = require("./memoryManager.js") as typeof import("./memoryManager.js");
+  .option("--json", "Emit machine-readable JSON on stdout")
+  .action(async (opts: { limit: string; json?: boolean }) => {
+    const { recall } = await import("./memoryManager.js");
     const entries = recall(undefined, { limit: parseInt(opts.limit, 10) });
+    if (opts.json) {
+      console.log(JSON.stringify(entries, null, 2));
+      return;
+    }
     for (const e of entries) {
       console.log(`  [${e.kind}] (${e.id.slice(0, 8)}) conf=${e.confidence.toFixed(2)} ${e.content.slice(0, 80)}`);
     }

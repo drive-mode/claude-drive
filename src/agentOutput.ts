@@ -26,13 +26,20 @@ export interface DecisionEvent {
 }
 export interface ChimeEvent { type: "chime"; name?: string; }
 export interface ClearEvent { type: "clear"; }
+export interface ProgressEvent {
+  type: "progress";
+  agent: string;
+  summary: string;
+  toolsUsed?: number;
+}
 
 export type DriveOutputEvent =
   | ActivityEvent
   | FileEvent
   | DecisionEvent
   | ChimeEvent
-  | ClearEvent;
+  | ClearEvent
+  | ProgressEvent;
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 
@@ -49,15 +56,25 @@ const OPERATOR_COLORS = [
   "\x1b[31m",  // red
 ];
 
-const operatorColorMap = new Map<string, string>();
-let colorIndex = 0;
-
-function colorFor(agent: string): string {
-  if (!operatorColorMap.has(agent)) {
-    operatorColorMap.set(agent, OPERATOR_COLORS[colorIndex % OPERATOR_COLORS.length]);
-    colorIndex++;
+/**
+ * Per-instance palette state (used to be module-level mutable variables).
+ * Each emitter owns its own colour cursor so tests can spawn fresh instances
+ * without cross-test contamination.
+ */
+class ColorPalette {
+  private colorMap = new Map<string, string>();
+  private colorIndex = 0;
+  next(agent: string): string {
+    if (!this.colorMap.has(agent)) {
+      this.colorMap.set(agent, OPERATOR_COLORS[this.colorIndex % OPERATOR_COLORS.length]);
+      this.colorIndex++;
+    }
+    return this.colorMap.get(agent)!;
   }
-  return operatorColorMap.get(agent)!;
+  reset(): void {
+    this.colorMap.clear();
+    this.colorIndex = 0;
+  }
 }
 
 function ts(): string {
@@ -69,6 +86,7 @@ function ts(): string {
 export class AgentOutputEmitter extends EventEmitter {
   private sseBroadcast: ((data: string) => void) | null = null;
   private renderMode: "terminal" | "tui" = "terminal";
+  private palette = new ColorPalette();
 
   setSseBroadcast(fn: (data: string) => void): void {
     this.sseBroadcast = fn;
@@ -80,6 +98,11 @@ export class AgentOutputEmitter extends EventEmitter {
 
   getRenderMode(): "terminal" | "tui" {
     return this.renderMode;
+  }
+
+  /** Test hook: reset per-instance colour assignments. */
+  resetPalette(): void {
+    this.palette.reset();
   }
 
   emit(eventName: string, event?: DriveOutputEvent): boolean {
@@ -94,14 +117,14 @@ export class AgentOutputEmitter extends EventEmitter {
     if (this.renderMode === "tui") return; // TUI owns stdout
     switch (event.type) {
       case "activity": {
-        const color = colorFor(event.agent);
+        const color = this.palette.next(event.agent);
         process.stdout.write(
           `${DIM}${ts()}${RESET} ${color}${BOLD}[${event.agent}]${RESET} ${event.text}\n`
         );
         break;
       }
       case "file": {
-        const color = colorFor(event.agent);
+        const color = this.palette.next(event.agent);
         const action = event.action ?? "touched";
         process.stdout.write(
           `${DIM}${ts()}${RESET} ${color}[${event.agent}]${RESET} ${DIM}${action}${RESET} ${event.path}\n`
@@ -109,9 +132,16 @@ export class AgentOutputEmitter extends EventEmitter {
         break;
       }
       case "decision": {
-        const color = colorFor(event.agent);
+        const color = this.palette.next(event.agent);
         process.stdout.write(
           `${DIM}${ts()}${RESET} ${color}[${event.agent}]${RESET} ${BOLD}Decision:${RESET} ${event.text}\n`
+        );
+        break;
+      }
+      case "progress": {
+        const color = this.palette.next(event.agent);
+        process.stdout.write(
+          `${DIM}${ts()}${RESET} ${color}[${event.agent}]${RESET} ${DIM}»${RESET} ${event.summary}\n`,
         );
         break;
       }

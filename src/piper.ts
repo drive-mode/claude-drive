@@ -12,26 +12,44 @@ import path from "path";
 import os from "os";
 import { spawn } from "child_process";
 import { getConfig } from "./config.js";
+import { logger } from "./logger.js";
 
-let piperAvailable: boolean | undefined;
-let currentProcess: import("child_process").ChildProcess | null = null;
+/**
+ * Runtime state for the piper backend: cached availability probe and the
+ * currently-running synthesiser process. Encapsulated in a singleton so tests
+ * can `__resetForTests()` without reloading the module.
+ */
+class PiperRuntime {
+  available: boolean | undefined;
+  current: import("child_process").ChildProcess | null = null;
+  __resetForTests(): void {
+    this.available = undefined;
+    this.current = null;
+  }
+}
+const piper = new PiperRuntime();
+
+/** Test-only: reset cached availability + kill tracker. */
+export function __resetPiperForTests(): void {
+  piper.__resetForTests();
+}
 
 export function stopPiper(): void {
-  if (currentProcess) {
-    try { currentProcess.kill("SIGTERM"); } catch { /* ignore */ }
-    currentProcess = null;
+  if (piper.current) {
+    try { piper.current.kill("SIGTERM"); } catch { /* ignore */ }
+    piper.current = null;
   }
 }
 
 export function isPiperAvailable(): boolean {
-  if (piperAvailable !== undefined) return piperAvailable;
+  if (piper.available !== undefined) return piper.available;
   const exePath = (getConfig<string>("tts.piperBinaryPath") ?? "").trim();
   const modelPath = (getConfig<string>("tts.piperModelPath") ?? "").trim();
-  if (!exePath || !modelPath) { piperAvailable = false; return false; }
+  if (!exePath || !modelPath) { piper.available = false; return false; }
   try {
-    if (!fs.existsSync(exePath) || !fs.existsSync(modelPath)) { piperAvailable = false; return false; }
-  } catch { piperAvailable = false; return false; }
-  piperAvailable = true;
+    if (!fs.existsSync(exePath) || !fs.existsSync(modelPath)) { piper.available = false; return false; }
+  } catch { piper.available = false; return false; }
+  piper.available = true;
   return true;
 }
 
@@ -46,21 +64,21 @@ export function speakPiper(text: string, _volume: number, onSpoken?: (speech: st
   const wavPath = path.join(os.tmpdir(), `claude-drive-piper-${Date.now()}.wav`);
   const args = ["--model", modelPath, "--output_file", wavPath, "--length_scale", String(1 / speed)];
   const proc = spawn(exePath, args, { stdio: ["pipe", "ignore", "pipe"], shell: process.platform === "win32" });
-  currentProcess = proc;
+  piper.current = proc;
 
   proc.stdin.write(text, "utf8", () => proc.stdin.end());
 
   let stderr = "";
   proc.stderr.on("data", (d) => { stderr += d.toString(); });
-  proc.on("error", (err) => { console.error("[Drive Piper]", err); currentProcess = null; });
+  proc.on("error", (err) => { logger.error("[Drive Piper]", err); piper.current = null; });
   proc.on("close", (code) => {
-    currentProcess = null;
-    if (code !== 0) { console.error("[Drive Piper] exit", code, stderr); return; }
+    piper.current = null;
+    if (code !== 0) { logger.error("[Drive Piper] exit", code, stderr); return; }
     if (!fs.existsSync(wavPath)) return;
     const playProc = spawnPlayWav(wavPath);
-    if (playProc) currentProcess = playProc;
+    if (playProc) piper.current = playProc;
     const done = () => {
-      currentProcess = null;
+      piper.current = null;
       try { fs.unlinkSync(wavPath); } catch { /* ignore */ }
       onSpoken?.(text);
     };

@@ -3,8 +3,7 @@
  * so the Claude Code status line script can read Drive state without HTTP.
  */
 import fs from "fs";
-import path from "path";
-import os from "os";
+import { statusDir, statusFile } from "./paths.js";
 
 export interface OperatorStatsData {
   costUsd: number;
@@ -40,20 +39,18 @@ export interface StatusFileData {
   updatedAt: number;
 }
 
-const STATUS_DIR = path.join(os.homedir(), ".claude-drive");
-const STATUS_FILE = path.join(STATUS_DIR, "status.json");
-
 export function getStatusFilePath(): string {
-  return STATUS_FILE;
+  return statusFile();
 }
 
 /** Write status.json atomically (write to .tmp, then rename). */
 export function writeStatusFile(data: StatusFileData): void {
   try {
-    fs.mkdirSync(STATUS_DIR, { recursive: true });
-    const tmp = STATUS_FILE + ".tmp";
+    fs.mkdirSync(statusDir(), { recursive: true });
+    const target = statusFile();
+    const tmp = target + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify(data), "utf-8");
-    fs.renameSync(tmp, STATUS_FILE);
+    fs.renameSync(tmp, target);
   } catch (e) {
     // Non-critical — don't crash the server
     process.stderr.write(`[claude-drive] Failed to write status file: ${e}\n`);
@@ -62,14 +59,7 @@ export function writeStatusFile(data: StatusFileData): void {
 
 /** Delete status.json on shutdown. */
 export function deleteStatusFile(): void {
-  try {
-    fs.unlinkSync(STATUS_FILE);
-  } catch {
-    /* already gone */
-  }
-  try {
-    fs.unlinkSync(STATUS_FILE + ".tmp");
-  } catch {
-    /* already gone */
-  }
+  const target = statusFile();
+  try { fs.unlinkSync(target); } catch { /* already gone */ }
+  try { fs.unlinkSync(target + ".tmp"); } catch { /* already gone */ }
 }

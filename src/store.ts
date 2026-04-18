@@ -1,51 +1,72 @@
 /**
  * store.ts — Simple JSON file-based key-value store.
  * Replaces vscode.Memento for state persistence outside VS Code.
+ *
+ * Implementation: each caller gets a singleton instance of `StateStore`.
+ * The default instance (exported as `store`) persists under
+ * `${home()}/state.json`. Alternative base paths — primarily useful in
+ * tests — can be constructed via `createStore(path)`.
  */
 import fs from "fs";
 import path from "path";
-import os from "os";
 import { atomicWriteJSON } from "./atomicWrite.js";
+import { home } from "./paths.js";
+import { logger } from "./logger.js";
 
-const STORE_DIR = path.join(os.homedir(), ".claude-drive");
-const STORE_FILE = path.join(STORE_DIR, "state.json");
+class StateStore {
+  private cache: Record<string, unknown> = {};
+  private loaded = false;
 
-let cache: Record<string, unknown> = {};
-let loaded = false;
+  constructor(private filePath: string) {}
 
-function ensureLoaded(): void {
-  if (loaded) return;
-  try {
-    fs.mkdirSync(STORE_DIR, { recursive: true });
-    if (fs.existsSync(STORE_FILE)) {
-      cache = JSON.parse(fs.readFileSync(STORE_FILE, "utf-8"));
+  private ensureLoaded(): void {
+    if (this.loaded) return;
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      if (fs.existsSync(this.filePath)) {
+        this.cache = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
+      }
+    } catch {
+      this.cache = {};
     }
-  } catch {
-    cache = {};
+    this.loaded = true;
   }
-  loaded = true;
-}
 
-function flush(): void {
-  try {
-    atomicWriteJSON(STORE_FILE, cache);
-  } catch (e) {
-    console.error("[store] Failed to flush:", e);
+  private flush(): void {
+    try {
+      atomicWriteJSON(this.filePath, this.cache);
+    } catch (e) {
+      logger.error("[store] Failed to flush:", e);
+    }
   }
-}
 
-export const store = {
   get<T>(key: string, defaultValue: T): T {
-    ensureLoaded();
-    return key in cache ? (cache[key] as T) : defaultValue;
-  },
+    this.ensureLoaded();
+    return key in this.cache ? (this.cache[key] as T) : defaultValue;
+  }
+
   update(key: string, value: unknown): void {
-    ensureLoaded();
-    cache[key] = value;
-    flush();
-  },
+    this.ensureLoaded();
+    this.cache[key] = value;
+    this.flush();
+  }
+
   keys(): readonly string[] {
-    ensureLoaded();
-    return Object.keys(cache);
-  },
-};
+    this.ensureLoaded();
+    return Object.keys(this.cache);
+  }
+
+  /** Test-only: drop cached state so the next read reloads from disk. */
+  __resetForTests(): void {
+    this.cache = {};
+    this.loaded = false;
+  }
+}
+
+/** Construct a store rooted at an arbitrary file path. */
+export function createStore(filePath: string): StateStore {
+  return new StateStore(filePath);
+}
+
+/** Default singleton — persists under `${home()}/state.json`. */
+export const store: StateStore = new StateStore(path.join(home(), "state.json"));

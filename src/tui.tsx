@@ -2,7 +2,7 @@
  * tui.tsx — Two-pane ink TUI for claude-drive.
  * Layout: activity feed left, operator list right, Drive status bar at bottom.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { render, Box, Text, useApp, useInput } from "ink";
 import Spinner from "ink-spinner";
 import type { OperatorRegistry, OperatorContext } from "./operatorRegistry.js";
