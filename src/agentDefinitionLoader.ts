@@ -56,14 +56,38 @@ export interface AgentDefinition {
 
 // ── Built-in registry ───────────────────────────────────────────────────────
 
-const BUILTIN_DEFS = new Map<string, AgentDefinition>();
+class BuiltinAgentRegistry {
+  private readonly defs = new Map<string, AgentDefinition>();
+
+  register(def: AgentDefinition): void {
+    this.defs.set(def.name, { ...def, scope: "builtin" });
+  }
+
+  clear(): void {
+    this.defs.clear();
+  }
+
+  values(): IterableIterator<AgentDefinition> {
+    return this.defs.values();
+  }
+
+  __resetForTests(): void {
+    this.defs.clear();
+  }
+}
+
+const builtinAgentRegistry = new BuiltinAgentRegistry();
 
 export function registerBuiltinAgent(def: AgentDefinition): void {
-  BUILTIN_DEFS.set(def.name, { ...def, scope: "builtin" });
+  builtinAgentRegistry.register(def);
 }
 
 export function clearBuiltinAgents(): void {
-  BUILTIN_DEFS.clear();
+  builtinAgentRegistry.clear();
+}
+
+export function __resetBuiltinAgentRegistryForTests(): void {
+  builtinAgentRegistry.__resetForTests();
 }
 
 // ── File parsing ────────────────────────────────────────────────────────────
@@ -145,7 +169,7 @@ export function loadAgentDefinitions(
 
   for (const scope of scopes) {
     const defs: AgentDefinition[] = (() => {
-      if (scope === "builtin") return [...BUILTIN_DEFS.values()];
+      if (scope === "builtin") return [...builtinAgentRegistry.values()];
       if (scope === "user") {
         const override = opts.userDir ?? getConfig<string>("agents.directory");
         const dir = override ? expandUserHome(override) : agentsDir();
@@ -166,10 +190,6 @@ export function loadAgentDefinitions(
 
 export function getAgentDefinition(name: string, opts: LoadOptions = {}): AgentDefinition | undefined {
   return loadAgentDefinitions(["builtin", "user", "project"], opts).find((d) => d.name === name);
-}
-
-export function listAgentDefinitionNames(opts: LoadOptions = {}): string[] {
-  return loadAgentDefinitions(["builtin", "user", "project"], opts).map((d) => d.name);
 }
 
 /**

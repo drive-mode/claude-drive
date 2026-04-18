@@ -299,30 +299,35 @@ export function registerAllTools(server: McpServer, opts: McpToolDeps): void {
     const timeout = timeoutMs ?? getConfig<number>("operator.awaitTimeoutMs") ?? 300000;
 
     let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout>;
     const timer = new Promise<"timeout">((resolve) => {
-      setTimeout(() => { timedOut = true; resolve("timeout"); }, timeout);
+      timeoutHandle = setTimeout(() => { timedOut = true; resolve("timeout"); }, timeout);
     });
 
-    if (op.runPromise) {
-      const outcome = await Promise.race([
-        op.runPromise.then(() => "done" as const).catch(() => "done" as const),
-        timer,
-      ]);
-      if (outcome === "timeout") {
-        return { content: [{ type: "text", text: `Timed out after ${timeout}ms waiting for ${op.name}` }], isError: true };
-      }
-    } else {
-      while (op.status !== "completed" && op.status !== "merged") {
-        if (timedOut) {
+    try {
+      if (op.runPromise) {
+        const outcome = await Promise.race([
+          op.runPromise.then(() => "done" as const).catch(() => "done" as const),
+          timer,
+        ]);
+        if (outcome === "timeout") {
           return { content: [{ type: "text", text: `Timed out after ${timeout}ms waiting for ${op.name}` }], isError: true };
         }
-        await new Promise((r) => setTimeout(r, 250));
+      } else {
+        while (op.status !== "completed" && op.status !== "merged") {
+          if (timedOut) {
+            return { content: [{ type: "text", text: `Timed out after ${timeout}ms waiting for ${op.name}` }], isError: true };
+          }
+          await new Promise((r) => setTimeout(r, 250));
+        }
       }
-    }
 
-    const snap = readProgressSnapshot(op.id);
-    const payload = { status: op.status, stats: op.stats, lastProgress: snap.last };
-    return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+      const snap = readProgressSnapshot(op.id);
+      const payload = { status: op.status, stats: op.stats, lastProgress: snap.last };
+      return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+    } finally {
+      clearTimeout(timeoutHandle!);
+    }
   });
 
   server.tool("operator_context_usage", "Get cached context-window usage for an operator", {
